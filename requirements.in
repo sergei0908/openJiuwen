@@ -1,0 +1,4 @@
+# Direct dependencies of the harness. After editing, regenerate requirements.txt:
+#   uv pip compile requirements.in -o requirements.txt --python-version 3.11 --python-platform x86_64-unknown-linux-gnu
+openjiuwen==0.1.19
+httpx==0.28.1

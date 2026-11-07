@@ -31,13 +31,14 @@ jobs:
           if [ -d tests ]; then pytest -q; else echo "no tests/ yet"; fi
 
   docker:
-    # Image build is slow: only check it on PRs into main.
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    # Build the image on every PR: a broken image means disqualification.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build image
+      - name: Build image (jury limit 1000 s)
+        timeout-minutes: 16
         run: docker build -t agent:ci .
 
       - name: Check image size < 4 GB
@@ -45,3 +46,15 @@ jobs:
           size=$(docker image inspect agent:ci --format '{{.Size}}')
           echo "Image size: $((size / 1024 / 1024)) MB"
           [ "$size" -lt $((4 * 1024 * 1024 * 1024)) ]
+
+      - name: Smoke test with jury flags and no network
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=2g -e HOME=/tmp \
+            --cap-drop ALL --security-opt no-new-privileges --workdir /tmp \
+            --entrypoint python agent:ci -c "
+          import sys; sys.path.insert(0, '/app')
+          from harness.llm import LLM, Ledger
+          backend = LLM(Ledger())._backend
+          print('LLM backend:', backend)
+          assert backend == 'openjiuwen', 'openJiuwen failed to import inside the image'
+          "
