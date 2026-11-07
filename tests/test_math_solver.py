@@ -47,3 +47,14 @@ def test_organizer_example_math_0000():
             " Then the stock is split equally into 3 warehouses and it keeps one share"
             " (rounded down)." + TAIL)
     assert fast_solve(text) == "389"
+
+
+def test_customer_buys():
+    text = ("A warehouse starts with 100 boxes. Then a customer buys 30 boxes from it." + TAIL)
+    assert fast_solve(text) == "70"
+
+
+def test_grows_threefold():
+    text = ("A warehouse starts with 40 boxes. Then its stock grows threefold after an acquisition."
+            " Then a customer buys 20 boxes from it." + TAIL)
+    assert fast_solve(text) == "100"
