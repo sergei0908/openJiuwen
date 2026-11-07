@@ -58,3 +58,8 @@ def test_grows_threefold():
     text = ("A warehouse starts with 40 boxes. Then its stock grows threefold after an acquisition."
             " Then a customer buys 20 boxes from it." + TAIL)
     assert fast_solve(text) == "100"
+
+
+def test_grows_twofold():
+    text = ("A warehouse starts with 25 boxes. Then its stock grows twofold after an acquisition." + TAIL)
+    assert fast_solve(text) == "50"
