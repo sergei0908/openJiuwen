@@ -9,11 +9,13 @@ import argparse
 import os
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(APP_DIR))
 sys.dont_write_bytecode = True
+warnings.filterwarnings("ignore", category=SyntaxWarning)  # шум из зависимостей openJiuwen
 
 
 def main():

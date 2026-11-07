@@ -13,6 +13,13 @@ import time
 from . import config
 
 _tls = threading.local()
+_SLOTS = threading.BoundedSemaphore(config.MAX_CONCURRENT)
+
+BUDGET_MARKERS = ("budget", "бюджет", "exhaust", "исчерпан", "402", "insufficient",
+                  "quota exceeded", "token limit", "лимит токенов")
+RATE_MARKERS = ("429", "rate", "too many", "слишком много", "одновремен", "concurrent",
+                "limit resets")
+NET_MARKERS = ("connect", "timeout", "timed out", "503", "502", "504", "refused")
 
 
 class BudgetExhausted(Exception):
@@ -27,6 +34,7 @@ class Ledger:
         self.spent = 0.0
         self.calls = 0
         self.exhausted = False
+        self.fail_streak = 0
         self._lock = threading.Lock()
 
     def add(self, prompt_tokens, completion_tokens):
@@ -46,13 +54,12 @@ class Ledger:
 
 
 def _quiet_openjiuwen_logs():
-    for name in list(logging.root.manager.loggerDict):
-        if "jiuwen" in name or name in ("llm", "common", "agent", "workflow"):
-            logging.getLogger(name).setLevel(logging.WARNING)
+    """openJiuwen по умолчанию пишет INFO по каждому вызову модели - ошибки харнесс логирует сам."""
     try:
-        from loguru import logger as _lg
-        _lg.remove()
-        _lg.add(lambda m: None)
+        from openjiuwen.core.common.logging.manager import LogManager
+        for name in ("common", "llm", "agent", "tool", "runner", "prompt", "interface",
+                     "performance", "session", "sys_operation"):
+            LogManager.get_logger(name).set_level(logging.CRITICAL)
     except Exception:  # noqa: BLE001, S110 - логирование openJiuwen необязательно
         pass
 
@@ -97,36 +104,41 @@ class LLM:
         max_tokens = max_tokens or config.MAX_OUT_FAST
         t0 = time.time()
         last_err = None
-        for attempt in range(3):
+        for attempt in range(8):
             try:
-                if self._backend == "openjiuwen":
-                    text, pt, ct = self._call_oj(messages, model, max_tokens)
-                else:
-                    text, pt, ct = self._call_httpx(messages, model, max_tokens)
+                with _SLOTS:  # не больше MAX_CONCURRENT запросов одновременно
+                    if self._backend == "openjiuwen":
+                        text, pt, ct = self._call_oj(messages, model, max_tokens)
+                    else:
+                        text, pt, ct = self._call_httpx(messages, model, max_tokens)
                 if pt == 0:  # прокси не вернул usage - оцениваем сами, с запасом
                     pt = sum(len(str(m.get("content", ""))) for m in messages) // 3
                     ct = max(ct, len(text) // 3)
                 cost = self.ledger.add(pt, ct)
+                self.ledger.fail_streak = 0
                 return text, cost, {"model": model, "prompt_tokens": pt,
                                     "completion_tokens": ct, "latency": time.time() - t0}
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 last_err = e
                 msg = str(e).lower()
-                if any(s in msg for s in ("budget", "quota", "exhaust", "402", "insufficient")):
+                if any(s in msg for s in BUDGET_MARKERS):
                     self.ledger.exhausted = True
-                    raise BudgetExhausted(str(e))
-                if "429" in msg or "rate" in msg:
-                    time.sleep(2 + 3 * attempt)
+                    raise BudgetExhausted(str(e)) from e
+                if any(s in msg for s in RATE_MARKERS):
+                    # лимит частоты/одновременности - это не конец бюджета, просто ждём
+                    time.sleep(min(20, 1.5 * (attempt + 1)))
                     continue
-                if any(s in msg for s in ("connect", "timeout", "timed out", "503", "502")):
+                if any(s in msg for s in NET_MARKERS) and attempt < 3:
                     time.sleep(1 + attempt)
                     continue
                 break
-        # Прокси молчит после нескольких попыток - считаем бюджет исчерпанным.
-        if last_err is not None and any(s in str(last_err).lower()
-                                        for s in ("connect", "429", "refused")):
-            self.ledger.exhausted = True
-            raise BudgetExhausted(str(last_err))
+        # Запрос так и не прошёл. Если подряд не проходят многие запросы (а не один),
+        # значит прокси перестал отвечать - по регламенту так выглядит конец бюджета.
+        with self._lock:
+            self.ledger.fail_streak += 1
+            if self.ledger.fail_streak >= config.FAIL_STREAK_EXHAUSTED:
+                self.ledger.exhausted = True
+                raise BudgetExhausted(str(last_err))
         raise RuntimeError(f"LLM call failed: {last_err}")
 
     def _call_oj(self, messages, model, max_tokens):
