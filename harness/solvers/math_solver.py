@@ -23,6 +23,9 @@ RULES = [
      lambda s, k: s // k),
     (r"(?:Then )?the stock is doubled(?: by merging with a sister \w+)?", lambda s: s * 2),
     (r"(?:Then )?the stock is tripled(?: by merging with two sister \w+)?", lambda s: s * 3),
+    (rf"(?:Then )?a customer buys {N} \w+(?: from it)?", lambda s, a: s - a),
+    (r"(?:Then )?its stock grows threefold(?: after an acquisition)?", lambda s: s * 3),
+    (r"(?:Then )?its stock grows twofold(?: after an acquisition)?", lambda s: s * 2),
 ]
 FINAL = re.compile(r"How many \w+ does it have at the end\?", re.IGNORECASE)
 
