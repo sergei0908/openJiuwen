@@ -8,12 +8,11 @@ import re
 from pathlib import Path
 
 from .base import (
-    ANSWER_RULES,
+    FINAL_RULES,
     Plan,
+    agent_answer,
     approx_tokens,
-    clean_answer,
     extract_question,
-    is_unsolvable,
 )
 
 REL = {"employer": "employer", "company": "employer", "mentor": "mentor",
@@ -154,17 +153,15 @@ def analyze(task, fast_path=True):
     return p
 
 
-PROMPT = ("Knowledge base excerpt:\n{ctx}\n\nQuestion: {q}\n"
-          "Answer using only the excerpt. " + ANSWER_RULES)
+SYSTEM = ("You answer a question about a small knowledge base. Use only the excerpt given in the "
+          "message; follow links between people and companies step by step. " + FINAL_RULES)
 
 
 def solve_llm(task, llm, plan, strong=False):
-    from .. import config
     if plan.notes.get("generic"):
         from .generic import solve_generic
         return solve_generic(task, llm, plan)
-    msgs = [{"role": "user", "content": PROMPT.format(ctx=plan.context, q=plan.notes["question"])}]
-    text, _cost, _meta = llm.chat(msgs, model=config.MODEL_STRONG if strong else config.MODEL_FAST,
-                                max_tokens=config.MAX_OUT_STRONG if strong else 40)
-    ans = clean_answer(text.strip().splitlines()[-1] if text.strip() else "")
-    return None if is_unsolvable(ans) else ans
+    query = f"Knowledge base excerpt:\n{plan.context}\n\nQuestion: {plan.notes['question']}"
+    # контекст уже собран харнессом - инструменты не нужны, хватает одного шага
+    return agent_answer(llm, system_prompt=SYSTEM, query=query, tools=[], strong=strong,
+                        max_tokens=60, max_iterations=1)

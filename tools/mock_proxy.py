@@ -20,14 +20,29 @@ STATE = {"spent": 0.0, "budget": None, "calls": 0, "inflight": 0, "max_conc": No
          "exhaust_mode": "http429", "after_exhausted": 0}
 
 
-def fake_answer(prompt: str) -> str:
-    # Для coding-промпта возвращаем исходный файл без изменений (тесты не пройдут),
-    # для остальных - программу, печатающую 42.
-    if "mylib.py" in prompt and "```python" in prompt:
-        m = re.search(r"```python\n(.*?)```", prompt, re.DOTALL)
-        body = m.group(1) if m else "pass\n"
-        return "```python\n" + body + "```"
-    return "```python\nprint(42)\n```"
+def fake_answer(req):
+    """Имитирует агентный ответ: сначала вызов инструмента, потом 'FINAL: <вывод инструмента>'.
+
+    Возвращает (content, tool_calls). Задачи «по-настоящему» не решает: python печатает 42,
+    update_code присылает первую функцию из промпта без изменений (тесты не пройдут) - цель
+    в проверке цикла агента, учёта токенов и лимитов.
+    """
+    msgs = req.get("messages", [])
+    tools = [t.get("function", {}).get("name") for t in (req.get("tools") or [])]
+    if any(m.get("role") == "tool" for m in msgs):
+        out = str([m for m in msgs if m.get("role") == "tool"][-1].get("content", "")).strip().splitlines()
+        return "FINAL: " + (out[0] if out else "?"), None
+    if "python" in tools:
+        return "", [_call("python", {"code": "print(42)"})]
+    if "update_code" in tools:
+        prompt = "\n".join(str(m.get("content", "")) for m in msgs)
+        m = re.search(r"```python\n(def .*?)(?:\n\S|```)", prompt, re.DOTALL)
+        return "", [_call("update_code", {"code": (m.group(1) if m else "def f():\n    pass") + "\n"})]
+    return "FINAL: 42", None
+
+
+def _call(name, args):
+    return {"id": "call_1", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
 
 
 class H(BaseHTTPRequestHandler):
@@ -59,7 +74,7 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", "0"))
         req = json.loads(self.rfile.read(n) or b"{}")
         msgs = req.get("messages", [])
-        prompt = "\n".join(str(m.get("content", "")) for m in msgs)
+        prompt = "\n".join(str(m.get("content", "")) for m in msgs) + json.dumps(req.get("tools") or [])
         with LOCK:
             if STATE["max_conc"] and STATE["inflight"] >= STATE["max_conc"]:
                 STATE["rejected"] += 1
@@ -70,11 +85,11 @@ class H(BaseHTTPRequestHandler):
             STATE["inflight"] += 1
         try:
             time.sleep(0.3)  # имитация задержки модели
-            text = fake_answer(prompt)
+            text, tool_calls = fake_answer(req)
         finally:
             with LOCK:
                 STATE["inflight"] -= 1
-        pt, ct = max(1, len(prompt) // 4), max(1, len(text) // 4)
+        pt, ct = max(1, len(prompt) // 4), max(1, (len(text) + len(json.dumps(tool_calls or []))) // 4)
         with LOCK:
             cost = ct + pt / 10
             over = STATE["budget"] is not None and STATE["spent"] + cost > STATE["budget"]
@@ -86,8 +101,9 @@ class H(BaseHTTPRequestHandler):
             return
         body = {
             "id": "mock", "object": "chat.completion", "model": req.get("model", "mock"),
-            "choices": [{"index": 0, "finish_reason": "stop",
-                         "message": {"role": "assistant", "content": text}}],
+            "choices": [{"index": 0, "finish_reason": "tool_calls" if tool_calls else "stop",
+                         "message": dict({"role": "assistant", "content": text},
+                                         **({"tool_calls": tool_calls} if tool_calls else {}))}],
             "usage": {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct},
         }
         if req.get("stream"):
@@ -95,8 +111,9 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
             chunk = dict(body, object="chat.completion.chunk",
-                         choices=[{"index": 0, "delta": {"role": "assistant", "content": text},
-                                   "finish_reason": "stop"}])
+                         choices=[{"index": 0, "delta": dict({"role": "assistant", "content": text},
+                                   **({"tool_calls": [dict(tc, index=0) for tc in tool_calls]} if tool_calls else {})),
+                                   "finish_reason": "tool_calls" if tool_calls else "stop"}])
             self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
             self.wfile.write(b"data: [DONE]\n\n")
             return

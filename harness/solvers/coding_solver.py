@@ -111,10 +111,12 @@ def analyze(task, fast_path=True):
     return p
 
 
-PROMPT = ("{task}\n\n{files}\n\nCurrent test output:\n```\n{out}\n```\n\n"
-          "Fix the bugs. Do not change the tests. Reply with ONLY the corrected functions, each one "
-          "complete, in one ```python block. Do not repeat unchanged functions. {multi}No explanations.")
-MULTI = "Start the block of each changed file with a comment `# FILE: <filename>`. "
+SYSTEM = ("You fix bugs in Python code so that the tests pass. Never change the tests. Call update_code "
+          "with ONLY the corrected functions, each complete; it applies them and runs the tests. If the "
+          "tests fail, fix the remaining bugs the same way. If the tests contradict each other and cannot "
+          "all pass, reply 'FINAL: IMPOSSIBLE'.")
+QUERY = "{task}\n\n{files}\n\nCurrent test output:\n```\n{out}\n```"
+MULTI = "\n\nSeveral source files: pass `file` to update_code."
 
 
 def _top_level(tree):
@@ -203,61 +205,50 @@ def failing_context(targets, tests, out):
             "Failing tests:\n```python\n" + "\n\n".join(parts) + "\n```")
 
 
-def _parse_files(text, targets):
-    blocks = sandbox.CODE_RE.findall(text or "")
-    res = {}
-    names = [t.name for t in targets]
-    for b in blocks:
-        m = re.match(r"\s*#\s*FILE:\s*(\S+)\s*\n", b)
-        if m and m.group(1) in names:
-            res[m.group(1)] = b[m.end():]
-        elif len(names) == 1 and b.strip():
-            res[names[0]] = (res[names[0]] + "\n\n" + b) if names[0] in res else b
-    return res
-
-
 def solve_llm(task, llm, plan, strong=False):
     from .. import config
+    from ..oj_agent import make_coding_tools
     if plan.notes.get("generic"):
         from .generic import solve_generic
         return solve_generic(task, llm, plan)
     targets, tests = find_files(task.workspace)
     originals = {t.name: t.read_text(encoding="utf-8") for t in targets}
-    # стартуем с частичной APR-починки: меньше багов остаётся модели
-    for name, src in plan.notes.get("partial", {}).items():
-        write_file(task.workspace / name, src + "\n")
-    ok, out = run_tests(task, tests)
-    if ok:
-        return "DONE"
-    task_text = strip_boilerplate(task.instruction)
-    attempts = [(config.MODEL_FAST, 2500)]
-    if config.ALLOW_REASONING and task.reward >= 2:
-        attempts.append((config.MODEL_STRONG, config.MAX_OUT_STRONG + 2500))
-    else:
-        attempts.append((config.MODEL_FAST, 2500))
-    multi = MULTI if len(targets) > 1 else ""
-    for attempt, (model, max_out) in enumerate(attempts):
-        files = failing_context(targets, tests, out) if attempt == 0 else None
-        if files is None:
-            files = "\n\n".join(f"File {t.name}:\n```python\n{t.read_text(encoding='utf-8')}```"
-                                for t in targets + tests)
-        msgs = [{"role": "user", "content": PROMPT.format(task=task_text, files=files, multi=multi,
-                                                           out=out[-1200:])}]
-        text, _cost, _meta = llm.chat(msgs, model=model, max_tokens=max_out)
-        changed = False
-        for name, reply in _parse_files(text, targets).items():
-            path = task.workspace / name
-            merged = merge_reply(path.read_text(encoding="utf-8"), reply)
-            if merged is not None:
-                write_file(path, merged)
-                changed = True
-        if not changed:
-            continue
+    passed = False
+    try:
+        # стартуем с частичной APR-починки: меньше багов остаётся модели
+        for name, src in plan.notes.get("partial", {}).items():
+            write_file(task.workspace / name, src + "\n")
         ok, out = run_tests(task, tests)
         if ok:
+            passed = True
             return "DONE"
-        if not llm.ledger.can_afford(plan.est_cost):
-            break
-    for name, src in originals.items():  # не оставляем испорченные файлы
-        write_file(task.workspace / name, src)
-    return None
+        cmd = test_cmd(task, tests)
+        cmd[0] = sandbox.PY
+        task_text = strip_boilerplate(task.instruction)
+        attempts = [(config.MODEL_FAST, 2500)]
+        if config.ALLOW_REASONING and task.reward >= 2:
+            attempts.append((config.MODEL_STRONG, config.MAX_OUT_STRONG + 2500))
+        else:
+            attempts.append((config.MODEL_FAST, 2500))
+        multi = MULTI if len(targets) > 1 else ""
+        for attempt, (model, max_out) in enumerate(attempts):
+            # первая попытка - только упавшие тесты и нужные функции, вторая - файлы целиком
+            files = failing_context(targets, tests, out) if attempt == 0 else None
+            if files is None:
+                files = "\n\n".join(f"File {t.name}:\n```python\n{t.read_text(encoding='utf-8')}```"
+                                    for t in targets + tests)
+            tools, state = make_coding_tools(task.workspace, {t.name for t in targets}, cmd)
+            llm.agent(system_prompt=SYSTEM, query=QUERY.format(task=task_text, files=files, out=out[-1200:]) + multi,
+                      tools=tools, model=model, max_iterations=3, max_tokens=max_out,
+                      stop=lambda state=state: state["passed"])
+            ok, out = run_tests(task, tests)  # проверяем сами, не веря агенту на слово
+            if ok:
+                passed = True
+                return "DONE"
+            if not llm.ledger.can_afford(plan.est_cost):
+                break
+        return None
+    finally:
+        if not passed:  # не оставляем испорченные файлы, в том числе при обрыве по бюджету
+            for name, src in originals.items():
+                write_file(task.workspace / name, src)

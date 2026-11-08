@@ -1,47 +1,26 @@
-"""Запасной агент для незнакомых задач: короткий цикл «команда bash -> наблюдение».
+"""Запасной агент для задач незнакомого вида: агент openJiuwen с инструментом python.
 
-Жёсткие лимиты: не больше MAX_STEPS шагов, вывод команд обрезается, история не растёт
-бесконечно (оставляем только последние наблюдения) - иначе входные токены съедают бюджет.
+Жёсткие лимиты: не больше MAX_STEPS шагов, вывод инструмента обрезается (oj_agent.TOOL_OUTPUT_LIMIT).
 """
-import re
 
 from .. import sandbox
 from .base import ANSWER_RULES, clean_answer, is_unsolvable, strip_boilerplate
 
 MAX_STEPS = 6
-OBS_LIMIT = 1200
 
-SYSTEM = ("You solve a task inside a Linux directory using bash. Each reply must be EITHER one "
-          "```bash block with a single command to run, OR a line 'FINAL: <answer>'. Be brief, "
-          "no explanations. Prefer python3 -c for computation. " + ANSWER_RULES +
-          " For tasks that require editing files, edit them with bash/python, then reply FINAL: DONE.")
+SYSTEM = ("You solve a task inside its directory. Use the python tool to inspect files and compute; "
+          "it can also edit files. Keep tool output short. " + ANSWER_RULES +
+          " Finish with one line 'FINAL: <answer>' (for tasks that only edit files: 'FINAL: DONE').")
 
 
 def solve_generic(task, llm, plan, steps=MAX_STEPS):
-    from .. import config
+    from ..oj_agent import final_answer, make_python_tool
     listing = sandbox.run(["bash", "-lc", "ls -la | head -40"], task.workspace, 10)[1]
-    msgs = [{"role": "system", "content": SYSTEM},
-            {"role": "user", "content": f"Task: {strip_boilerplate(task.instruction)}\n\n"
-                                        f"Directory listing:\n{listing[:1500]}"}]
-    for _ in range(steps):
-        text, _cost, _meta = llm.chat(msgs, model=config.MODEL_FAST, max_tokens=500)
-        m = re.search(r"FINAL:\s*(.+)", text)
-        if m:
-            ans = clean_answer(m.group(1).splitlines()[0])
-            return None if is_unsolvable(ans) else ans
-        cmd = re.search(r"```(?:bash|sh)?\s*\n(.*?)```", text, re.DOTALL)
-        if not cmd:
-            msgs.append({"role": "assistant", "content": text[:500]})
-            msgs.append({"role": "user", "content": "Reply with a ```bash block or FINAL: <answer>."})
-            continue
-        rc, out, err = sandbox.run(["bash", "-lc", cmd.group(1)], task.workspace, 30)
-        obs = (out + ("\n[stderr]\n" + err if err else ""))[-OBS_LIMIT:]
-        msgs.append({"role": "assistant", "content": text[:800]})
-        msgs.append({"role": "user", "content": f"exit={rc}\n{obs}"})
-        # компактная история: system + задача + последние 2 шага
-        if len(msgs) > 6:
-            msgs = msgs[:2] + msgs[-4:]
-    return None
+    query = f"Task: {strip_boilerplate(task.instruction)}\n\nDirectory listing:\n{listing[:1500]}"
+    text = llm.agent(system_prompt=SYSTEM, query=query, tools=[make_python_tool(task.workspace)],
+                     max_iterations=steps, max_tokens=500)
+    ans = clean_answer(final_answer(text))
+    return None if is_unsolvable(ans) else ans
 
 
 def analyze(task, fast_path=True):
