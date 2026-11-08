@@ -17,31 +17,44 @@ from .base import (
 )
 
 Q = r"'([^']+)'"
+REVENUE = r"(?:\(units ?(?:\*|x|times|multiplied by) ?price\) )?"
 METRICS = [
     (r"How many units of", "units"),
     (r"How many units in total of", "units"),
-    (r"What is the total revenue \(units ?\* ?price\) (?:of|for)", "revenue"),
-    (r"What is the total revenue (?:of|for)", "revenue"),
+    (r"What is the total number of units of", "units"),
+    (r"What is the total number of units", "units"),
+    (r"How many units", "units"),
+    (rf"What is the total revenue {REVENUE}(?:of|for)", "revenue"),
+    (rf"What is the total revenue {REVENUE}", "revenue"),
     (r"How many orders (?:of|for)", "orders"),
+    (r"How many orders", "orders"),
+    (r"Which product sold the most units", "top_product_units"),
+    (r"Which region sold the most units", "top_region_units"),
+    (r"Which product (?:generated|had) the (?:most|highest) (?:total )?revenue", "top_product_revenue"),
+    (r"Which region (?:generated|had) the (?:most|highest) (?:total )?revenue", "top_region_revenue"),
 ]
+# Необязательные слова вокруг условий: на результат они не влияют.
+NOISE = r"\s+(?:(?:were|was) (?:sold|placed)|sold|placed)\b"
+MONTHS = r"(?:in|for|during) months? (\d+) (?:through|to|-) (?:month )?(\d+)(?: inclusive)?"
 FILTERS = [
-    (rf"product {Q}", "product"),
-    (rf"in(?: the)? region {Q}", "region"),
-    (r"in months (\d+) through (\d+) inclusive", "months"),
-    (r"in months (\d+) to (\d+) inclusive", "months"),
-    (r"in month (\d+)", "month"),
+    (rf"(?:for |of )?product {Q}", "product"),
+    (rf"(?:in|for)(?: the)? region {Q}", "region"),
+    (rf"(?:in|for) the {Q} region", "region"),
+    (MONTHS, "months"),
+    (r"from month (\d+) to month (\d+)(?: inclusive)?", "months"),
+    (r"between months (\d+) and (\d+)(?: inclusive)?", "months"),
+    (r"(?:in|for|during) month (\d+)", "month"),
 ]
 
 
 def parse_question(q):
     q = q.strip()
     for mpat, metric in METRICS:
-        m = re.match(mpat + r"\s+", q, flags=re.IGNORECASE)
+        m = re.match(mpat + r"(?:\s+|(?=\?))", q, flags=re.IGNORECASE)
         if not m:
             continue
-        rest = q[m.end():]
-        rest = re.sub(r"\s+(?:were|was) sold", "", rest, flags=re.IGNORECASE)
-        rest = re.sub(r"\s+were placed", "", rest, flags=re.IGNORECASE)
+        rest = " " + q[m.end():]
+        rest = re.sub(NOISE, "", rest, flags=re.IGNORECASE)
         rest = rest.rstrip("?").strip()
         filt = {}
         while rest:
@@ -90,6 +103,8 @@ def named_values(q):
 
 
 def compute(rows, metric, filt):
+    if metric.startswith("top_"):
+        return compute_top(rows, metric, filt)
     total = 0
     for r in rows:
         try:
@@ -114,6 +129,23 @@ def compute(rows, metric, filt):
         except (KeyError, ValueError):
             return None
     return str(int(total)) if float(total).is_integer() else f"{total:.2f}"
+
+
+def compute_top(rows, metric, filt):
+    """Какой товар или регион лидирует. При ничьей точного ответа нет: решает LLM, а не угадываем."""
+    _, col, measure = metric.split("_")
+    groups = {}
+    for r in rows:
+        key = (r.get(col) or "").strip()
+        value = compute([r], measure, filt)
+        if value is None or not key:
+            return None
+        groups[key] = groups.get(key, 0) + float(value)
+    if not groups:
+        return None
+    best = max(groups.values())
+    leaders = [k for k, v in groups.items() if v == best]
+    return leaders[0] if len(leaders) == 1 and best > 0 else None
 
 
 def csv_files(ws):
