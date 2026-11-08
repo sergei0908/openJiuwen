@@ -1,8 +1,8 @@
 name: CI
 
 on:
+  # Every PR, including PRs stacked on another feature branch.
   pull_request:
-    branches: [main, develop]
   push:
     branches: [main, develop]
 
@@ -58,3 +58,6 @@ jobs:
           print('LLM backend:', backend)
           assert backend == 'openjiuwen', 'openJiuwen failed to import inside the image'
           "
+
+      - name: Run the harness end-to-end on example tasks (jury flags, no network, no key)
+        run: IMAGE=agent:ci tools/jury_run.sh examples/tasks

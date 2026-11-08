@@ -1,7 +1,10 @@
 """Локальная оценка: сверяет answer.txt с expected, для coding прогоняет тесты.
 
-    python3 tools/score.py /tmp/train [--orig /tmp/train_orig]  # orig - копия до запуска (для тестов)
+    python3 tools/score.py /tmp/train [--strict]
+
+--strict: код выхода 1, если есть неверный ответ или answer.txt у невыполнимой задачи (для CI).
 """
+import argparse
 import json
 import subprocess
 import sys
@@ -27,8 +30,12 @@ def check(d: Path, j: dict):
     return ans.strip().lower() == exp.strip().lower(), ans
 
 
-def main():
-    root = Path(sys.argv[1])
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("root")
+    ap.add_argument("--strict", action="store_true")
+    a = ap.parse_args(argv)
+    root = Path(a.root)
     tot = got = 0.0
     by = {}
     wrong = []
@@ -60,7 +67,8 @@ def main():
         print("  MISS", *w)
     for t, names in sorted(extra.items()):
         print(f"  WARNING answer.txt у невыполнимых задач ({t}): {len(names)}: {' '.join(names[:10])}")
+    return 1 if a.strict and (wrong or extra or not by) else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
