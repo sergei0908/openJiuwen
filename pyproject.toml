@@ -1,0 +1,7 @@
+# Tool settings only: the project is not a package.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+# Example tasks contain deliberately broken code.
+extend-exclude = ["examples"]
