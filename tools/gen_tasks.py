@@ -132,9 +132,20 @@ def gen_data(r, novel, infeasible):
     a = r.randint(1, 11)
     b = r.randint(a, min(12, a + 2))
     prod = r.choice(PRODUCTS)
-    if infeasible:
-        prod = r.choice(["doohickey", "thingamajig", "whatsit"])
-    if novel and not infeasible:
+    bad_q = None
+    if infeasible:  # данных для точного ответа нет: товар, регион или месяцы не существуют
+        kind = r.choice(["product", "region", "months", "reversed"])
+        if kind == "product":
+            prod = r.choice(["doohickey", "thingamajig", "whatsit"])
+        elif kind == "region":
+            bad_q = f"How many units of product '{prod}' in region 'atlantis' were sold in months {a} through {b} inclusive?"
+        elif kind == "months":
+            bad_q = f"How many units of product '{prod}' were sold in months {r.randint(13, 20)} through {r.randint(21, 30)} inclusive?"
+        else:
+            bad_q = f"How many units of product '{prod}' were sold in months {b + 1} through {a} inclusive?"
+    if bad_q:
+        q, exp = bad_q, "N/A"
+    elif novel and not infeasible:
         reg = r.choice(REGIONS)
         q = f"What is the total revenue (units times price) of product '{prod}' in region '{reg}' for months {a} to {b}?"
         exp = sum(x[4] * x[5] for x in rows if x[2] == prod and x[1] == reg and a <= x[3] <= b)

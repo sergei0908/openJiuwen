@@ -32,6 +32,7 @@ def main():
     tot = got = 0.0
     by = {}
     wrong = []
+    extra = {}
     for d in sorted(root.iterdir()):
         f = d / "task.json"
         if not f.is_file():
@@ -40,6 +41,8 @@ def main():
         ok, info = check(d, j)
         if j.get("_infeasible"):
             ok = False
+            if (d / "answer.txt").is_file():
+                extra.setdefault(j.get("task_type"), []).append(d.name)
         rw = float(j.get("reward", 1))
         tot += 0 if j.get("_infeasible") else rw
         got += rw if ok else 0
@@ -55,6 +58,8 @@ def main():
         print(f"  {t:15s} solved {ok}/{feas} feasible ({n} total)")
     for w in wrong[:15]:
         print("  MISS", *w)
+    for t, names in sorted(extra.items()):
+        print(f"  WARNING answer.txt у невыполнимых задач ({t}): {len(names)}: {' '.join(names[:10])}")
 
 
 if __name__ == "__main__":
