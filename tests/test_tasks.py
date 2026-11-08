@@ -3,7 +3,16 @@ import json
 
 import pytest
 
-from harness.tasks import AnswerWriter, Task, can_write, find_budget, load_tasks
+from harness import runner, tasks
+from harness.solvers import coding_solver
+from harness.tasks import (
+    AnswerWriter,
+    Task,
+    can_write,
+    find_budget,
+    load_tasks,
+    write_file,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -50,19 +59,95 @@ def test_output_file_is_updated_after_each_answer(tmp_path):
     assert json.loads(out.read_text(encoding="utf-8")) == {"t": "42"}
 
 
+def blocked_task(tmp_path):
+    """Каталог задачи, куда нельзя записать answer.txt: на этом месте лежит каталог."""
+    task = make_task(tmp_path, workspace=False)
+    (tmp_path / "answer.txt").mkdir()
+    return task
+
+
 def test_write_failure_is_reported_not_raised(tmp_path, capsys):
-    (tmp_path / "answer.txt").mkdir()  # запись в каталог - ошибка, как в каталоге без прав
-    AnswerWriter().write(make_task(tmp_path, workspace=False), "42")
-    assert "cannot write" in capsys.readouterr().err
+    assert AnswerWriter().write(blocked_task(tmp_path), "42") is False
+    captured = capsys.readouterr()
+    assert "cannot write answer for t" in captured.err
+    assert "ANSWER t 42" in captured.out
+
+
+def test_answer_goes_to_out_directory_when_task_dir_is_closed(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    assert AnswerWriter(out).write(blocked_task(task_dir), "42") is True
+    assert json.loads((out / "solutions.json").read_text(encoding="utf-8")) == {"t": "42"}
+    assert (out / "task" / "answer.txt").read_text(encoding="utf-8") == "42\n"
+
+
+def test_no_extra_files_in_out_when_task_dir_is_open(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    assert AnswerWriter(out).write(make_task(task_dir), "42") is True
+    assert [p.name for p in out.iterdir()] == ["solutions.json"]
+
+
+def test_write_file_replaces_read_only_file_through_directory(tmp_path, monkeypatch):
+    target = tmp_path / "mylib.py"
+    target.write_text("old", encoding="utf-8")
+    real = tasks.Path.write_text
+
+    def closed_file(self, *a, **k):
+        if self.name == "mylib.py":
+            raise PermissionError("read-only")
+        return real(self, *a, **k)
+    monkeypatch.setattr(tasks.Path, "write_text", closed_file)
+    write_file(target, "new")
+    assert target.read_text(encoding="utf-8") == "new"
+    assert [p.name for p in tmp_path.iterdir()] == ["mylib.py"]
+
+
+def test_write_file_raises_when_nothing_helps(tmp_path):
+    with pytest.raises(OSError, match="."):
+        write_file(tmp_path / "missing" / "f.txt", "x")
+
+
+def test_lost_answer_gives_no_reward_and_is_counted(tmp_path):
+    r = runner.Runner(tmp_path)
+    r.save(blocked_task(tmp_path), "42")
+    assert r.stats["answers_lost"] == 1
+    assert r.stats["reward_claimed"] == 0
+
+
+def test_saved_answer_gives_reward(tmp_path):
+    r = runner.Runner(tmp_path)
+    r.save(make_task(tmp_path, workspace=False), "42")
+    assert r.stats["answers_lost"] == 0
+    assert r.stats["reward_claimed"] == 1
+
+
+def test_coding_task_without_write_permission_spends_no_tokens(tmp_path, monkeypatch, capsys):
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    (ws / "mylib.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (ws / "test_mylib.py").write_text(
+        "import unittest\nimport mylib as m\n\nclass T(unittest.TestCase):\n    def test(self):\n"
+        "        self.assertEqual(m.f(), 2)\n\nif __name__ == '__main__':\n    unittest.main()\n", encoding="utf-8")
+    monkeypatch.setattr(coding_solver, "can_fix", lambda *_: False)
+    task = Task(task_id="t", dir=tmp_path, task_type="coding", reward=1,
+                instruction="Run `python3 test_mylib.py` in the current directory.")
+    plan = coding_solver.analyze(task)
+    assert plan.feasible is False
+    assert "cannot modify files of t" in capsys.readouterr().err
 
 
 def test_can_write_detects_writable_directory_and_leaves_no_files(tmp_path):
-    assert can_write(make_task(tmp_path, workspace=False))
+    assert can_write(tmp_path)
     assert list(tmp_path.iterdir()) == []
 
 
 def test_can_write_detects_missing_directory(tmp_path):
-    assert not can_write(make_task(tmp_path / "missing", workspace=False))
+    assert not can_write(tmp_path / "missing")
 
 
 def test_expected_field_is_optional(tmp_path):
