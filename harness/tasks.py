@@ -88,7 +88,10 @@ def can_write(task: Task) -> bool:
 
 
 class AnswerWriter:
-    """Пишет answer.txt сразу после решения + общий файл решений (если задан)."""
+    """Пишет answer.txt рядом с task.json сразу после решения + общий файл решений (если задан).
+
+    Для невыполнимой задачи файл не создаётся (требование организаторов).
+    """
 
     def __init__(self, out_path=None):
         self.out_path = Path(out_path) if out_path else None
@@ -97,8 +100,8 @@ class AnswerWriter:
     def write(self, task: Task, answer: str):
         answer = str(answer).strip()
         with _lock:
-            targets = {task.dir / "answer.txt", task.workspace / "answer.txt"}
-            for p in targets:
+            # организаторы: answer.txt кладётся рядом с task.json (не в workspace/)
+            for p in (task.dir / "answer.txt",):
                 try:
                     p.write_text(answer + "\n", encoding="utf-8")
                 except OSError as e:

@@ -100,7 +100,8 @@ def fast_solve(question, ents):
         val = ent["fields"].get(attr)
         if val:
             return val
-        return "IMPOSSIBLE" if status == "ok" else None
+        # поле нужно, а его нет: у сущности нет поля или файла связанной сущности нет в базе
+        return "IMPOSSIBLE" if status in ("ok", "dangling") else None
     return None
 
 

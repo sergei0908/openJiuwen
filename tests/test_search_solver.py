@@ -58,9 +58,9 @@ def test_missing_person_is_impossible(kb):
 
 
 def test_company_without_file_is_not_guessed(kb):
-    # у Olga Petrov работодатель Ghost Corp, но файла компании нет - ответа быть не должно
+    # у Olga Petrov работодатель Ghost Corp, но файла компании нет - точно ответить нельзя
     q = "In which city is the headquarters of Olga Petrov's employer?"
-    assert fast_solve(q, kb) in (None, "IMPOSSIBLE")
+    assert fast_solve(q, kb) == "IMPOSSIBLE"
 
 
 def test_unknown_question_goes_to_llm(kb):
