@@ -2,10 +2,15 @@
 
     python3 tools/score.py /tmp/train [--strict]
 
+Если рядом с task.json есть hidden_test.py (его пишет gen_tasks.py), задача coding считается решённой
+только при его прохождении, как у жюри: баллы начисляются за скрытые тесты. Такие провалы показаны как
+OVERFIT: видимые тесты прошли, скрытые нет.
+
 --strict: код выхода 1, если есть неверный ответ или answer.txt у невыполнимой задачи (для CI).
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -21,7 +26,15 @@ def check(d: Path, j: dict):
         ws = d / "workspace"
         tests = sorted(ws.glob("test*.py"))
         p = subprocess.run([sys.executable, tests[0].name], cwd=ws, capture_output=True, text=True, timeout=60, check=False)
-        return (p.returncode == 0 and ans == "DONE"), "tests_fail" if p.returncode else "ok"
+        if p.returncode or ans != "DONE":
+            return False, "tests_fail" if p.returncode else "ok"
+        hidden = d / "hidden_test.py"
+        if hidden.is_file():
+            h = subprocess.run([sys.executable, str(hidden.resolve())], cwd=ws, capture_output=True, text=True,
+                               timeout=60, check=False, env=dict(os.environ, PYTHONPATH=str(ws.resolve())))
+            if h.returncode:
+                return False, "overfit"
+        return True, "ok"
     if chk == "exact_int":
         try:
             return int(float(ans)) == int(exp), ans
@@ -63,6 +76,9 @@ def main(argv=None):
     print(f"score {got:.0f} / {tot:.0f} achievable")
     for t, (n, ok, feas) in sorted(by.items()):
         print(f"  {t:15s} solved {ok}/{feas} feasible ({n} total)")
+    overfit = [w[0] for w in wrong if w[2] == "overfit"]
+    if any((d / "hidden_test.py").is_file() for d in root.iterdir()):
+        print(f"  hidden tests: {len(overfit)} OVERFIT repairs: {' '.join(overfit[:10])}")
     for w in wrong[:15]:
         print("  MISS", *w)
     for t, names in sorted(extra.items()):
