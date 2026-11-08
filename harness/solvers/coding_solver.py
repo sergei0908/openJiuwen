@@ -81,6 +81,9 @@ def analyze(task, fast_path=True):
         p.feasible = False
         p.notes["unwritable"] = True
         return p
+    if contradictory_tests(tests):  # до перебора: на такой задаче он только потратит время
+        p.feasible = False
+        return p
     if fast_path:
         for tgt in targets:
             fixed, partial, info = apr.repair(task.workspace, tgt, tests)
@@ -96,9 +99,6 @@ def analyze(task, fast_path=True):
                 write_file(tgt, orig)
             elif partial and info.get("applied"):
                 p.notes.setdefault("partial", {})[tgt.name] = partial
-    if contradictory_tests(tests):
-        p.feasible = False
-        return p
     size = sum(len(t.read_text(encoding="utf-8")) for t in targets + tests)
     src_tok = sum(approx_tokens(t.read_text(encoding="utf-8")) for t in targets)
     p.est_cost = (size / 4 + 400) * 0.1 + src_tok * 1.1 + 40
