@@ -11,6 +11,7 @@ def _env(name, default):
 MODEL_FAST = _env("MODEL_FAST", "qwen3.8-27b-noreason")
 MODEL_STRONG = _env("MODEL_STRONG", "qwen3.8-27b")
 MODEL_ALT = _env("MODEL_ALT", "qwen3.6-35b-a3b-noreason")
+MODEL_STRONG_ALT = _env("MODEL_STRONG_ALT", "qwen3.6-35b-a3b")
 
 # Решатели без LLM (разбор шаблонных задач, автоматический ремонт кода мутациями).
 FAST_PATH = _env("FAST_PATH", "1") == "1"
@@ -21,8 +22,14 @@ PARALLEL = int(_env("PARALLEL", "5"))          # регламент: до 5 се
 # Одновременных запросов к модели. NeuralDeep на тарифе «Мероприятие» пускает 3 на аккаунт
 # (ошибка 429 «3 уже в работе при потолке тарифа 3»).
 MAX_CONCURRENT = int(_env("MAX_CONCURRENT", "3"))
-# Сколько запросов подряд должно провалиться, чтобы считать, что прокси закрыл бюджет.
+# Сколько неудачных запросов подряд означает, что прокси закрыл бюджет. Регламент: при исчерпании
+# прокси «перестаёт отвечать», а что именно он возвращает, неизвестно.
 FAIL_STREAK_EXHAUSTED = int(_env("FAIL_STREAK_EXHAUSTED", "6"))
+# Лимит частоты - не конец бюджета, но если без единого успеха он длится столько секунд, то конец.
+RATE_GIVE_UP_S = float(_env("RATE_GIVE_UP_S", "180"))
+# То же для кода 429 с незнакомым текстом: это может быть и лимит, и закрытый бюджет. Ложная остановка
+# обходится намного дороже лишних запросов, поэтому ждём дольше минутного окна лимита прокси.
+UNKNOWN_429_GIVE_UP_S = float(_env("UNKNOWN_429_GIVE_UP_S", "90"))
 TIME_LIMIT_S = float(_env("TIME_LIMIT_S", "3300"))  # 1 час минус запас
 MAX_OUT_FAST = int(_env("MAX_OUT_FAST", "1200"))
 MAX_OUT_STRONG = int(_env("MAX_OUT_STRONG", "3000"))
