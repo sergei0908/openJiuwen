@@ -59,13 +59,43 @@ def parse_question(q):
     return None
 
 
+def _same(a, b):
+    return a.strip().casefold() == b.strip().casefold()
+
+
+def data_exists(rows, filt):
+    """False, если на вопрос нельзя точно ответить по этим данным (задача невыполнима).
+
+    Товара или региона нет в файле, месяцы вне 1-12, начало диапазона больше конца.
+    Товар есть, но продаж в этих месяцах нет - это не сюда: верный ответ 0.
+    """
+    for col in ("product", "region"):
+        if col in filt and not any(_same(r.get(col) or "", filt[col][0]) for r in rows):
+            return False
+    if "months" in filt:
+        a, b = map(int, filt["months"])
+        if not 1 <= a <= b <= 12:
+            return False
+    return "month" not in filt or 1 <= int(filt["month"][0]) <= 12
+
+
+def named_values(q):
+    """Товар и регион, названные в вопросе, даже если весь вопрос разобрать не удалось."""
+    filt = {}
+    for key, pat in (("product", rf"product {Q}"), ("region", rf"region {Q}")):
+        m = re.search(pat, q, flags=re.IGNORECASE)
+        if m:
+            filt[key] = m.groups()
+    return filt
+
+
 def compute(rows, metric, filt):
     total = 0
     for r in rows:
         try:
-            if "product" in filt and r["product"].strip() != filt["product"][0]:
+            if "product" in filt and not _same(r["product"], filt["product"][0]):
                 continue
-            if "region" in filt and r["region"].strip() != filt["region"][0]:
+            if "region" in filt and not _same(r["region"], filt["region"][0]):
                 continue
             mo = int(float(r["month"]))
             if "months" in filt:
@@ -90,16 +120,31 @@ def csv_files(ws):
     return sorted(p for p in ws.glob("*.csv") if p.is_file())
 
 
+def read_rows(path):
+    try:
+        with path.open(newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return None
+
+
 def analyze(task, fast_path=True):
     p = Plan()
     files = csv_files(task.workspace)
     q = extract_question(task.instruction)
     p.notes["question"] = q
-    if fast_path and len(files) == 1 and re.search(r"sales\.csv", task.instruction):
+    # Файл, о котором спрашивают, отсутствует - данных для ответа нет.
+    have = {f.name for f in files}
+    if any(name not in have for name in re.findall(r"[\w.-]+\.csv", task.instruction)):
+        p.feasible = False
+        return p
+    if len(files) == 1:
+        rows = read_rows(files[0])
         parsed = parse_question(q)
-        if parsed:
-            with files[0].open(newline="", encoding="utf-8") as f:
-                rows = list(csv.DictReader(f))
+        if rows is not None and not data_exists(rows, parsed[1] if parsed else named_values(q)):
+            p.feasible = False
+            return p
+        if fast_path and rows is not None and parsed and re.search(r"sales\.csv", task.instruction):
             a = compute(rows, *parsed)
             if a is not None:
                 p.fast_answer = a
@@ -122,7 +167,8 @@ def analyze(task, fast_path=True):
 PROMPT = ("Task: {task}\n\nFiles in the current directory:\n{ctx}\n\n"
           "Write a short Python 3 program (stdlib csv module, no pandas) that reads the file(s) "
           "from the current directory, computes the answer and prints ONLY the final value "
-          "(an integer if the result is whole). Reply with one ```python block only.")
+          "(an integer if the result is whole). If the answer cannot be determined exactly from the "
+          "data, print IMPOSSIBLE. Reply with one ```python block only.")
 
 
 def solve_llm(task, llm, plan, strong=False):
