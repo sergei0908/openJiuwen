@@ -7,6 +7,7 @@ import asyncio
 import logging
 import math
 import os
+import re
 import threading
 import time
 
@@ -15,11 +16,14 @@ from . import config
 _tls = threading.local()
 _SLOTS = threading.BoundedSemaphore(config.MAX_CONCURRENT)
 
-BUDGET_MARKERS = ("budget", "бюджет", "exhaust", "исчерпан", "402", "insufficient",
-                  "quota exceeded", "token limit", "лимит токенов")
-RATE_MARKERS = ("429", "rate", "too many", "слишком много", "одновремен", "concurrent",
-                "limit resets")
-NET_MARKERS = ("connect", "timeout", "timed out", "503", "502", "504", "refused")
+BUDGET_RE = re.compile(r"budget|бюджет|exhaust|исчерпан|\b402\b|insufficient|quota exceeded|"
+                       r"лимит токенов")
+RATE_RE = re.compile(r"rate[ _-]limit|too many|слишком много|одновремен|concurrent|limit resets|"
+                     r"уже в работе|потолк")
+HTTP429_RE = re.compile(r"\b429\b")
+# Модель недоступна на этом ключе или не существует: это не конец бюджета, нужна другая модель.
+MODEL_RE = re.compile(r"(\b403\b|\b404\b).*(модел|model)|(модел|model).*(\b403\b|\b404\b)|"
+                      r"не входит в .*тариф|model.*(not found|does not exist)|permission.?denied")
 
 
 class BudgetExhausted(Exception):
@@ -35,6 +39,7 @@ class Ledger:
         self.calls = 0
         self.exhausted = False
         self.fail_streak = 0
+        self.last_ok = time.time()
         self._lock = threading.Lock()
 
     def add(self, prompt_tokens, completion_tokens):
@@ -51,6 +56,19 @@ class Ledger:
 
     def can_afford(self, est):
         return not self.exhausted and self.remaining() >= est
+
+    def ok(self):
+        with self._lock:
+            self.fail_streak = 0
+            self.last_ok = time.time()
+
+    def failed(self):
+        """Неудачный запрос. True, если подряд их столько, что прокси, видимо, закрыл бюджет."""
+        with self._lock:
+            self.fail_streak += 1
+            if self.fail_streak >= config.FAIL_STREAK_EXHAUSTED:
+                self.exhausted = True
+            return self.exhausted
 
 
 def _quiet_openjiuwen_logs():
@@ -72,6 +90,7 @@ class LLM:
         self._models = {}
         self._lock = threading.Lock()
         self._backend = None
+        self.unavailable = set()
         try:
             from openjiuwen.core.foundation.llm.model import Model  # noqa: F401
             self._backend = "openjiuwen"
@@ -96,49 +115,65 @@ class LLM:
                 _quiet_openjiuwen_logs()
             return self._models[name]
 
+    def _fallback(self, model):
+        """Ближайшая доступная модель: задача не должна пропасть из-за недоступной модели."""
+        chain = (config.MODEL_STRONG, config.MODEL_STRONG_ALT, config.MODEL_FAST, config.MODEL_ALT) \
+            if model in (config.MODEL_STRONG, config.MODEL_STRONG_ALT) \
+            else (config.MODEL_FAST, config.MODEL_ALT, config.MODEL_STRONG_ALT, config.MODEL_STRONG)
+        return next((m for m in (model, *chain) if m not in self.unavailable), None)
+
     def chat(self, messages, model=None, max_tokens=None):
-        """Возвращает (text, cost). Бросает BudgetExhausted, если прокси перестал отвечать."""
+        """Возвращает (text, cost, meta). Бросает BudgetExhausted, если прокси перестал отвечать."""
         if self.ledger.exhausted:
             raise BudgetExhausted("ledger exhausted")
         model = model or config.MODEL_FAST
         max_tokens = max_tokens or config.MAX_OUT_FAST
         t0 = time.time()
         last_err = None
-        for attempt in range(8):
+        for attempt in range(12):
+            if self.ledger.exhausted:
+                raise BudgetExhausted(str(last_err))
+            current = self._fallback(model)
+            if current is None:  # ни одна модель не отвечает: звать больше некого
+                self.ledger.exhausted = True
+                raise BudgetExhausted(f"no available model: {last_err}")
             try:
                 with _SLOTS:  # не больше MAX_CONCURRENT запросов одновременно
                     if self._backend == "openjiuwen":
-                        text, pt, ct = self._call_oj(messages, model, max_tokens)
+                        text, pt, ct = self._call_oj(messages, current, max_tokens)
                     else:
-                        text, pt, ct = self._call_httpx(messages, model, max_tokens)
+                        text, pt, ct = self._call_httpx(messages, current, max_tokens)
                 if pt == 0:  # прокси не вернул usage - оцениваем сами, с запасом
                     pt = sum(len(str(m.get("content", ""))) for m in messages) // 3
                     ct = max(ct, len(text) // 3)
                 cost = self.ledger.add(pt, ct)
-                self.ledger.fail_streak = 0
-                return text, cost, {"model": model, "prompt_tokens": pt,
+                self.ledger.ok()
+                return text, cost, {"model": current, "prompt_tokens": pt,
                                     "completion_tokens": ct, "latency": time.time() - t0}
-            except Exception as e:
+            except Exception as e:  # любая ошибка прокси разбирается по тексту
                 last_err = e
                 msg = str(e).lower()
-                if any(s in msg for s in BUDGET_MARKERS):
+                if BUDGET_RE.search(msg):
                     self.ledger.exhausted = True
                     raise BudgetExhausted(str(e)) from e
-                if any(s in msg for s in RATE_MARKERS):
-                    # лимит частоты/одновременности - это не конец бюджета, просто ждём
+                if MODEL_RE.search(msg):
+                    self.unavailable.add(current)
+                    continue
+                known = RATE_RE.search(msg)
+                if known or HTTP429_RE.search(msg):
+                    # лимит частоты - это не конец бюджета, просто ждём
+                    limit = config.RATE_GIVE_UP_S if known else config.UNKNOWN_429_GIVE_UP_S
+                    if time.time() - self.ledger.last_ok > limit:
+                        self.ledger.exhausted = True
+                        raise BudgetExhausted(str(e)) from e
                     time.sleep(min(20, 1.5 * (attempt + 1)))
                     continue
-                if any(s in msg for s in NET_MARKERS) and attempt < 3:
+                if self.ledger.failed():
+                    raise BudgetExhausted(str(e)) from e
+                if attempt < 2:
                     time.sleep(1 + attempt)
                     continue
                 break
-        # Запрос так и не прошёл. Если подряд не проходят многие запросы (а не один),
-        # значит прокси перестал отвечать - по регламенту так выглядит конец бюджета.
-        with self._lock:
-            self.ledger.fail_streak += 1
-            if self.ledger.fail_streak >= config.FAIL_STREAK_EXHAUSTED:
-                self.ledger.exhausted = True
-                raise BudgetExhausted(str(last_err))
         raise RuntimeError(f"LLM call failed: {last_err}")
 
     def _call_oj(self, messages, model, max_tokens):
