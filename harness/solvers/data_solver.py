@@ -8,6 +8,7 @@ import re
 
 from .base import (
     FINAL_RULES,
+    PRINT_FINAL,
     Plan,
     agent_answer,
     approx_tokens,
@@ -197,15 +198,17 @@ def analyze(task, fast_path=True):
 
 SYSTEM = ("You answer a question about CSV data in the task directory. Read and compute with the "
           "python tool (csv module); do not print whole files. An integer result must be printed "
-          "without decimals. " + FINAL_RULES)
+          "without decimals. " + PRINT_FINAL + FINAL_RULES)
 
 
 def solve_llm(task, llm, plan, strong=False):
-    from ..oj_agent import make_python_tool
+    from ..oj_agent import final_stop, make_python_tool
     if plan.notes.get("generic"):
         from .generic import solve_generic
         return solve_generic(task, llm, plan)
     task_text = re.sub(r"\s*Use bash with python3 to compute it\.", "", strip_boilerplate(task.instruction))
     query = f"Task: {task_text}\n\nFiles in the task directory:\n{plan.context}"
+    state = {}
     return agent_answer(llm, system_prompt=SYSTEM, query=query,
-                        tools=[make_python_tool(task.workspace)], strong=strong)
+                        tools=[make_python_tool(task.workspace, state)], strong=strong,
+                        stop=final_stop(state))

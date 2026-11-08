@@ -96,3 +96,32 @@ def test_agent_stops_when_tests_pass(mock_proxy, tmp_path):
     assert final_answer(text) == "DONE"
     assert len(task.calls) == 1
     assert "return 2" in (tmp_path / "mylib.py").read_text(encoding="utf-8")
+
+
+def test_agent_stops_when_script_prints_final(mock_proxy, tmp_path):
+    from harness.llm import LLM, Ledger
+    from harness.oj_agent import final_stop, make_python_tool
+    from harness.runner import TaskLLM
+    from harness.solvers.base import PRINT_FINAL
+
+    state = {}
+    task = TaskLLM(LLM(Ledger(budget=10_000)), cap=1_000)
+    text = task.agent(system_prompt="Use the python tool. " + PRINT_FINAL, query="Compute 40 + 2.",
+                      tools=[make_python_tool(tmp_path, state)], max_iterations=3, stop=final_stop(state))
+
+    # ответ напечатан скриптом - второй вызов модели («переписать ответ») не нужен
+    assert state == {"final": "42"}
+    assert final_answer(text) == "42"
+    assert len(task.calls) == 1
+
+
+def test_failed_script_final_is_ignored(tmp_path):
+    pytest.importorskip("openjiuwen")
+    import asyncio
+
+    from harness.oj_agent import make_python_tool
+
+    state = {}
+    tool = make_python_tool(tmp_path, state)
+    asyncio.run(tool.invoke({"code": "print('FINAL: 1')\nraise SystemExit(1)"}))
+    assert state == {}
