@@ -3,6 +3,11 @@
 Классический подход generate-and-validate: порождаем одиночные правки «типичных багов»
 (перевёрнутый оператор сравнения, += вместо -=, off-by-one, sorted/reversed, min/max ...),
 прогоняем тесты и жадно комбинируем правки, которые чинят тесты и ничего не ломают.
+
+Баллы дают скрытые тесты, поэтому порядок правок важен: чем меньше приоритет, тем раньше правка
+пробуется. Сначала идут правки, которые восстанавливают смысл кода; правки, способные случайно пройти
+один видимый тест (+ на *, сдвиг range, сортировка на list), - позже. Качество измеряется скрытыми
+тестами: tools/gen_tasks.py (HIDDEN) и tests/test_apr.py.
 """
 import ast
 import json
@@ -55,18 +60,20 @@ def _mutations(tree):
         names |= {t.id for t in ast.walk(fn) if isinstance(t, ast.Name) and isinstance(t.ctx, ast.Store)}
         for t in ast.walk(fn):
             funcs_locals[id(t)] = names
+    returned = {id(n.value) for n in nodes if isinstance(n, ast.Return)}
     for i, n in enumerate(nodes):
         if isinstance(n, (ast.BinOp, ast.AugAssign)):
             for k, alt in enumerate(BIN_ALT.get(type(n.op), [])):
-                out.append((1 + k, i, "binop", alt))
+                # + на * легко проходит один тест случайно (1 * 1 * 2 * 3 == 6): после констант
+                out.append((4 if alt is B.Mult else 1 + k, i, "binop", alt))
             if isinstance(n, ast.BinOp) and isinstance(n.op, NON_COMMUTATIVE):
-                out.append((3, i, "swap_operands", None))
+                out.append((4, i, "swap_operands", None))
             if isinstance(n, ast.BinOp) and isinstance(n.right, ast.BinOp):
                 out.append((5, i, "rotate", None))
         elif isinstance(n, ast.Compare):
             for j, op in enumerate(n.ops):
                 for k, alt in enumerate(CMP_ALT.get(type(op), [])):
-                    out.append((1 + k, i, "cmp", (j, alt)))
+                    out.append((3 if alt in (B.In, B.NotIn) else 1 + k, i, "cmp", (j, alt)))
         elif isinstance(n, ast.BoolOp):
             out.append((1, i, "boolop", ast.Or if isinstance(n.op, ast.And) else ast.And))
         elif isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.Not, ast.USub)):
@@ -84,12 +91,14 @@ def _mutations(tree):
                 out.append((4 + k, i, "const", a))
         elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
             for k, a in enumerate(NAME_ALT.get(n.id, [])):
-                out.append((1 + k, i, "name", a))
+                out.append((4 if a == "list" else 1 + k, i, "name", a))
             # подмена переменной на другую локальную (return best -> return x)
             loc = funcs_locals.get(id(n))
             if loc and n.id in loc:
+                # return best -> return x: неверная переменная в return - частая и понятная ошибка
+                prio = 2 if id(n) in returned else 5
                 for a in sorted(loc - {n.id}):
-                    out.append((5, i, "name", a))
+                    out.append((prio, i, "name", a))
         elif isinstance(n, ast.Attribute):
             for k, a in enumerate(ATTR_ALT.get(n.attr, [])):
                 out.append((2 + k, i, "attr", a))
@@ -97,22 +106,24 @@ def _mutations(tree):
             for fld in ("lower", "upper"):
                 sub = getattr(n, fld)
                 if sub is not None and not isinstance(sub, ast.Constant):
-                    out.append((2, i, "slice", (fld, ast.Add)))
-                    out.append((2, i, "slice", (fld, ast.Sub)))
+                    out.append((3, i, "slice", (fld, ast.Add)))
+                    out.append((3, i, "slice", (fld, ast.Sub)))
+                    if not isinstance(sub, ast.UnaryOp):  # xs[n:] -> xs[-n:]
+                        out.append((2, i, "slice_neg", fld))
             if n.step is None and (n.lower is None) != (n.upper is None):
                 out.append((3, i, "slice_flip", None))
                 out.append((4, i, "slice_flip_neg", None))
         elif isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "range" \
                 and 1 <= len(n.args) <= 2:
-            out.append((3, i, "range_shift", ast.Add))
-            out.append((3, i, "range_shift", ast.Sub))
+            out.append((4, i, "range_shift", ast.Add))
+            out.append((4, i, "range_shift", ast.Sub))
             if len(n.args) == 1:
                 out.append((4, i, "range_from_one", None))
         if isinstance(n, ast.Call) and len(n.args) == 1 and not n.keywords:
             fname = n.func.id if isinstance(n.func, ast.Name) else \
                 (n.func.attr if isinstance(n.func, ast.Attribute) else "")
             if fname in ("sorted", "reversed", "list", "abs", "set", "int", "round"):
-                out.append((3, i, "unwrap_call", None))
+                out.append((4, i, "unwrap_call", None))  # убрать sorted() легко проходит тест случайно
             if fname in ("join", "sum", "list", "len", "max", "min", "tuple"):
                 for k, w in enumerate(("reversed", "sorted")):
                     out.append((3 + k, i, "wrap_arg", w))
@@ -153,6 +164,8 @@ def _mutations(tree):
         if isinstance(n, (ast.For, ast.comprehension)):
             for k, w in enumerate(("reversed", "sorted")):
                 out.append((4 + k, i, "wrap_iter", w))
+            if isinstance(n.iter, ast.Name):  # for c in s -> for c in s.lower()
+                out.append((2, i, "iter_method", "lower"))
         elif isinstance(n, ast.keyword) and isinstance(n.value, ast.Constant) \
                 and type(n.value.value) is bool:
             out.append((1, i, "kwflip", None))
@@ -211,6 +224,8 @@ def _apply(src, muts):
         elif kind == "slice":
             fld, op = pl
             setattr(n, fld, ast.BinOp(left=getattr(n, fld), op=op(), right=ast.Constant(1)))
+        elif kind == "slice_neg":
+            setattr(n, pl, ast.UnaryOp(op=ast.USub(), operand=getattr(n, pl)))
         elif kind == "slice_flip":
             n.lower, n.upper = n.upper, n.lower
         elif kind == "slice_flip_neg":
@@ -225,6 +240,8 @@ def _apply(src, muts):
             n.left, n.right = n.right, n.left
         elif kind == "rotate":  # a - b * c -> (a - b) * c: забытые скобки
             _rotate(n)
+        elif kind == "iter_method":
+            n.iter = ast.Call(func=ast.Attribute(value=n.iter, attr=pl, ctx=ast.Load()), args=[], keywords=[])
         elif kind == "arg_method":
             n.args = [ast.Call(func=ast.Attribute(value=n.args[0], attr=pl, ctx=ast.Load()), args=[], keywords=[])]
         elif kind == "insert_method":

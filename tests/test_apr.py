@@ -7,12 +7,15 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
-from gen_tasks import FUNCS
+from gen_tasks import FUNCS, HIDDEN
 
 from harness.solvers import apr, coding_solver
 from harness.tasks import Task
 
 CASES = [(name, i) for name, (_, bads, _) in sorted(FUNCS.items()) for i in range(len(bads))]
+# Видимый тест не различает верное исправление и подгонку, правка объективно неоднозначна:
+# average([2, 4, 6]) с целым средним не показывает // вместо /, median из 3 чисел - ys[1] вместо ys[n // 2].
+AMBIGUOUS = {("average", 1), ("median", 2)}
 
 
 def write_task(ws, src, checks):
@@ -34,6 +37,17 @@ def test_every_generated_bug_is_repaired(tmp_path, name, bug):
     tgt.write_text(fixed, encoding="utf-8")
     r = subprocess.run([sys.executable, "test_mylib.py"], cwd=tmp_path, capture_output=True, text=True, check=False)
     assert r.returncode == 0, r.stderr
+    # починка должна быть настоящей, а не подгонкой под видимые тесты
+    check = "; ".join(f"assert {c}" for c in HIDDEN[name])
+    r = subprocess.run([sys.executable, "-c", f"import mylib as m; {check}"], cwd=tmp_path, capture_output=True,
+                       text=True, check=False)
+    if (name, bug) in AMBIGUOUS:
+        pytest.xfail("видимый тест неоднозначен")
+    assert r.returncode == 0, f"overfit:\n{fixed}\n{r.stderr[-300:]}"
+
+
+def test_every_function_has_hidden_checks():
+    assert set(HIDDEN) == set(FUNCS)
 
 
 def test_syntax_error_is_reported_not_raised(tmp_path):
