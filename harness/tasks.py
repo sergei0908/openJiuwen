@@ -1,6 +1,7 @@
 """Загрузка задач и запись ответов."""
 import json
 import os
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,7 +46,7 @@ def load_tasks(tasks_dir: Path):
 
 def find_budget(tasks_dir: Path):
     """Ищет бюджет токенов: env -> файлы в каталоге задач. None, если неизвестен."""
-    for k in ("TOKEN_BUDGET", "BUDGET", "LLM_BUDGET", "OUTPUT_TOKEN_BUDGET"):
+    for k in ("BUDGET", "TOKEN_BUDGET", "LLM_BUDGET", "OUTPUT_TOKEN_BUDGET"):  # организаторы: BUDGET
         v = os.environ.get(k)
         if v:
             try:
@@ -69,10 +70,21 @@ def find_budget(tasks_dir: Path):
                             return float(j[k])
             except Exception:  # noqa: BLE001, S110 - нечитаемый файл бюджета пропускаем
                 pass
-    # docker run передаёт только LLM_BASE_URL/LLM_API_KEY, поэтому бюджет из регламента
-    # (~100k выходных токенов) зашит по умолчанию. DEFAULT_BUDGET=0 - считать бюджет неизвестным.
+    # Если BUDGET не передан, работаем с бюджетом организаторов: 100k выходных токенов.
+    # DEFAULT_BUDGET=0 - считать бюджет неизвестным.
     v = float(os.environ.get("DEFAULT_BUDGET", "100000"))
     return v if v > 0 else None
+
+
+def can_write(task: Task) -> bool:
+    """Контейнер работает без capabilities: root не пишет в чужой каталог без прав на запись."""
+    probe = task.dir / ".write_probe"
+    try:
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
 
 
 class AnswerWriter:
@@ -89,8 +101,8 @@ class AnswerWriter:
             for p in targets:
                 try:
                     p.write_text(answer + "\n", encoding="utf-8")
-                except OSError:
-                    pass
+                except OSError as e:
+                    print(f"ERROR cannot write {p}: {e}", file=sys.stderr, flush=True)
             self.solutions[task.task_id] = answer
             if self.out_path:
                 try:

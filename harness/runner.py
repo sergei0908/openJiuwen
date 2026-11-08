@@ -10,7 +10,7 @@ from pathlib import Path
 from . import config, solvers
 from .estimator import Estimator
 from .llm import LLM, BudgetExhausted, Ledger
-from .tasks import AnswerWriter, find_budget, load_tasks
+from .tasks import AnswerWriter, can_write, find_budget, load_tasks
 
 
 def log(*a):
@@ -121,6 +121,8 @@ class Runner:
 
     def run(self):
         log(f"tasks={len(self.tasks)} budget={self.ledger.budget} fast_path={config.FAST_PATH}")
+        if self.tasks and not can_write(self.tasks[0]):
+            log(f"ERROR: tasks directory is not writable, answers will be lost: {self.tasks_dir}")
         with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 2)) as ex:
             analyzed = list(ex.map(self.analyze_one, self.tasks))
         log(f"phase A done in {time.time() - self.t0:.1f}s: {self.stats}")
