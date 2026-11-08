@@ -1,8 +1,11 @@
 """Починка кода под тесты: APR мутациями (0 токенов) -> LLM с проверкой тестами."""
+import os
 import re
+import sys
 from pathlib import Path
 
 from .. import sandbox
+from ..tasks import can_write, write_file
 from . import apr
 from .base import Plan, approx_tokens, strip_boilerplate
 
@@ -26,6 +29,10 @@ def run_tests(task, tests):
     cmd[0] = sandbox.PY
     rc, out, err = sandbox.run(cmd, task.workspace, timeout=60)
     return rc == 0, (out + "\n" + err).strip()
+
+
+def can_fix(ws, targets):
+    return can_write(ws) or all(os.access(t, os.W_OK) for t in targets)
 
 
 def contradictory_tests(tests):
@@ -69,6 +76,11 @@ def analyze(task, fast_path=True):
         p.fast_answer = "DONE"
         return p
     p.notes["fail_out"] = out[-1500:]
+    if not can_fix(task.workspace, targets):  # исправление некуда сохранить: не тратим токены
+        print(f"ERROR cannot modify files of {task.task_id}: no write permission", file=sys.stderr, flush=True)
+        p.feasible = False
+        p.notes["unwritable"] = True
+        return p
     if contradictory_tests(tests):  # до перебора: на такой задаче он только потратит время
         p.feasible = False
         return p
@@ -78,13 +90,13 @@ def analyze(task, fast_path=True):
             p.notes.setdefault("apr", {})[tgt.name] = info
             if fixed is not None:
                 orig = tgt.read_text(encoding="utf-8")
-                tgt.write_text(fixed + ("\n" if not fixed.endswith("\n") else ""), encoding="utf-8")
+                write_file(tgt, fixed + ("\n" if not fixed.endswith("\n") else ""))
                 ok, out = run_tests(task, tests)
                 if ok:
                     p.fast_done = True
                     p.fast_answer = "DONE"
                     return p
-                tgt.write_text(orig, encoding="utf-8")
+                write_file(tgt, orig)
             elif partial and info.get("applied"):
                 p.notes.setdefault("partial", {})[tgt.name] = partial
     size = sum(len(t.read_text(encoding="utf-8")) for t in targets + tests)
@@ -122,7 +134,7 @@ def solve_llm(task, llm, plan, strong=False):
     originals = {t.name: t.read_text(encoding="utf-8") for t in targets}
     # стартуем с частичной APR-починки: меньше багов остаётся модели
     for name, src in plan.notes.get("partial", {}).items():
-        (task.workspace / name).write_text(src + "\n", encoding="utf-8")
+        write_file(task.workspace / name, src + "\n")
     ok, out = run_tests(task, tests)
     if ok:
         return "DONE"
@@ -142,12 +154,12 @@ def solve_llm(task, llm, plan, strong=False):
         if not new:
             continue
         for name, src in new.items():
-            (task.workspace / name).write_text(src, encoding="utf-8")
+            write_file(task.workspace / name, src)
         ok, out = run_tests(task, tests)
         if ok:
             return "DONE"
         if not llm.ledger.can_afford(plan.est_cost):
             break
     for name, src in originals.items():  # не оставляем испорченные файлы
-        (task.workspace / name).write_text(src, encoding="utf-8")
+        write_file(task.workspace / name, src)
     return None
