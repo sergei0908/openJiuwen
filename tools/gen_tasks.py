@@ -149,8 +149,27 @@ def gen_data(r, novel, infeasible):
         q, exp = bad_q, "N/A"
     elif novel and not infeasible:
         reg = r.choice(REGIONS)
-        q = f"What is the total revenue (units times price) of product '{prod}' in region '{reg}' for months {a} to {b}?"
-        exp = sum(x[4] * x[5] for x in rows if x[2] == prod and x[1] == reg and a <= x[3] <= b)
+        in_range = [x for x in rows if a <= x[3] <= b]
+        kind = r.choice(["revenue", "orders", "total_units", "from_to", "top"])
+        if kind == "revenue":
+            q = f"What is the total revenue (units times price) of product '{prod}' in region '{reg}' for months {a} to {b}?"
+            exp = sum(x[4] * x[5] for x in in_range if x[2] == prod and x[1] == reg)
+        elif kind == "orders":
+            q = f"How many orders for product '{prod}' were placed in region '{reg}' in months {a} through {b} inclusive?"
+            exp = sum(1 for x in in_range if x[2] == prod and x[1] == reg)
+        elif kind == "total_units":
+            q = f"What is the total number of units of product '{prod}' sold between months {a} and {b}?"
+            exp = sum(x[4] for x in in_range if x[2] == prod)
+        elif kind == "from_to":
+            q = f"How many units of product '{prod}' were sold in the '{reg}' region from month {a} to month {b}?"
+            exp = sum(x[4] for x in in_range if x[2] == prod and x[1] == reg)
+        else:
+            q = f"Which product sold the most units in months {a} through {b} inclusive?"
+            by = {p: sum(x[4] for x in in_range if x[2] == p) for p in PRODUCTS}
+            exp = max(sorted(by), key=by.get)
+            instr = (f"The file sales.csv has columns order_id,region,product,month,units,price ({n} rows). "
+                     + q + " Use bash with python3 to compute it.")
+            return instr, exp, "exact_str", {"sales.csv": csv}, infeasible
     else:
         q = f"How many units of product '{prod}' were sold in months {a} through {b} inclusive?"
         exp = sum(x[4] for x in rows if x[2] == prod and a <= x[3] <= b)
