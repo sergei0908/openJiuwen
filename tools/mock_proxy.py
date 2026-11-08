@@ -31,9 +31,11 @@ def fake_answer(req):
     tools = [t.get("function", {}).get("name") for t in (req.get("tools") or [])]
     if any(m.get("role") == "tool" for m in msgs):
         out = str([m for m in msgs if m.get("role") == "tool"][-1].get("content", "")).strip().splitlines()
-        return "FINAL: " + (out[0] if out else "?"), None
+        return "FINAL: " + (re.sub(r"^FINAL:\s*", "", out[0]) if out else "?"), None
     if "python" in tools:
-        return "", [_call("python", {"code": "print(42)"})]
+        # если системный промпт просит печатать ответ скриптом - печатаем FINAL, как настоящая модель
+        code = "print('FINAL:', 42)" if "print('FINAL:'" in str(msgs[0].get("content", "")) else "print(42)"
+        return "", [_call("python", {"code": code})]
     if "update_code" in tools:
         prompt = "\n".join(str(m.get("content", "")) for m in msgs)
         m = re.search(r"```python\n(def .*?)(?:\n\S|```)", prompt, re.DOTALL)

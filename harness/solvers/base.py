@@ -60,15 +60,19 @@ def approx_tokens(s: str) -> int:
 FINAL_RULES = ("When you know the answer, reply with exactly one line 'FINAL: <answer>' - only the value, "
                "no units or words. If the task cannot be answered exactly from the given data, "
                "reply 'FINAL: IMPOSSIBLE'.")
+# Для решателей с инструментом python: ответ печатает сам скрипт, и агент останавливается сразу.
+PRINT_FINAL = ("The script must end with print('FINAL:', answer) - that line is taken as your answer, "
+               "so print it only when the computation is complete. ")
 
 
-def agent_answer(llm, *, system_prompt, query, tools, strong=False, max_tokens=600, max_iterations=3):
+def agent_answer(llm, *, system_prompt, query, tools, strong=False, max_tokens=600, max_iterations=3,
+                 stop=None):
     """Решение через агента openJiuwen; возвращает очищенный ответ или None."""
     from .. import config
     from ..oj_agent import final_answer
     text = llm.agent(system_prompt=system_prompt, query=query, tools=tools,
                      model=config.MODEL_STRONG if strong else config.MODEL_FAST,
                      max_iterations=max_iterations,
-                     max_tokens=config.MAX_OUT_STRONG if strong else max_tokens)
+                     max_tokens=config.MAX_OUT_STRONG if strong else max_tokens, stop=stop)
     ans = clean_answer(final_answer(text))
     return None if is_unsolvable(ans) else ans

@@ -50,7 +50,7 @@ class TaskBudgetExceeded(Exception):
 
 
 class AgentStopped(Exception):
-    """Цель задачи уже достигнута - следующий вызов модели не нужен."""
+    """Цель задачи уже достигнута - следующий вызов модели не нужен. args[0] - финальный текст."""
 
 
 def _shared_loop():
@@ -109,8 +109,9 @@ def make_budget_model(llm, model_name, max_tokens):
 
         def _check(self):
             stop = STOP.get()
-            if stop is not None and stop():
-                raise AgentStopped()
+            res = stop() if stop is not None else None
+            if res:
+                raise AgentStopped(res if isinstance(res, str) else "FINAL: DONE")
             if llm.ledger.exhausted:
                 raise BudgetExhausted("ledger exhausted")
             task = CURRENT_TASK.get()
@@ -173,7 +174,10 @@ def _clip(s):
     return s if len(s) <= TOOL_OUTPUT_LIMIT else "...\n" + s[-TOOL_OUTPUT_LIMIT:]
 
 
-def make_python_tool(ws: Path):
+def make_python_tool(ws: Path, state=None):
+    """Инструмент python. Если передан state, строка 'FINAL: ...' в выводе успешного скрипта
+    запоминается в state["final"] - по ней агент останавливается (см. final_stop), и модели
+    не нужен ещё один вызов, чтобы переписать готовый ответ."""
     from openjiuwen.core.foundation.tool.tool import tool
 
     @tool(name="python", description="Run a Python 3 script in the task directory; returns stdout and stderr.",
@@ -181,9 +185,18 @@ def make_python_tool(ws: Path):
     async def python(code: str) -> str:
         from . import sandbox
         rc, out, err = await asyncio.to_thread(sandbox.run_python, code, ws, 20)
+        if state is not None and rc == 0:
+            found = FINAL_RE.findall(out)
+            if found and found[-1].strip():
+                state["final"] = found[-1].strip()
         return _clip(out + (("\n[stderr]\n" + err) if err.strip() else "") + f"\n[exit {rc}]")
 
     return python
+
+
+def final_stop(state):
+    """Условие остановки для run_agent: ответ уже напечатан скриптом."""
+    return lambda: f"FINAL: {state['final']}" if state.get("final") else None
 
 
 def make_coding_tools(ws: Path, editable, test_cmd):
@@ -251,8 +264,8 @@ async def _run_in_loop(llm, task_llm, system_prompt, query, tools, model_name, m
         )
         try:
             return await asyncio.wait_for(agent.invoke({"query": query}), timeout_s)
-        except AgentStopped:
-            return {"output": "FINAL: DONE"}
+        except AgentStopped as e:
+            return {"output": e.args[0]}
     finally:
         await asyncio.to_thread(shutil.rmtree, home, True)
 

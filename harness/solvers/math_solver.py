@@ -3,6 +3,7 @@ import re
 
 from .base import (
     FINAL_RULES,
+    PRINT_FINAL,
     Plan,
     agent_answer,
     approx_tokens,
@@ -72,11 +73,13 @@ def analyze(task, fast_path=True):
 
 
 SYSTEM = ("You solve an arithmetic word problem. Compute it with the python tool using exact integer "
-          "arithmetic, applying every step in the given order. " + FINAL_RULES)
+          "arithmetic, applying every step in the given order. " + PRINT_FINAL + FINAL_RULES)
 
 
 def solve_llm(task, llm, plan, strong=False):
-    from ..oj_agent import make_python_tool
+    from ..oj_agent import final_stop, make_python_tool
+    state = {}
     task_text = re.sub(r"\s*Compute it with .*$", "", strip_boilerplate(task.instruction), flags=re.DOTALL)
     return agent_answer(llm, system_prompt=SYSTEM, query=task_text,
-                        tools=[make_python_tool(task.workspace)], strong=strong)
+                        tools=[make_python_tool(task.workspace, state)], strong=strong,
+                        stop=final_stop(state))
