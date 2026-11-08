@@ -9,6 +9,7 @@ import json
 import os
 import signal
 import sys
+import time
 import types
 import unittest
 
@@ -42,7 +43,10 @@ def main():
     signal.signal(signal.SIGALRM, _alarm)
     real_stdout, real_stderr = sys.stdout, sys.stderr
     results = []
+    deadline = cfg.get("deadline")
     for src in cfg["sources"]:
+        if deadline and time.time() > deadline:  # результатов меньше, чем вариантов: это допустимо
+            break
         res = {"passed": [], "all": [], "err": None}
         sys.stdout = sys.stderr = io.StringIO()
         try:
