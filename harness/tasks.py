@@ -1,6 +1,7 @@
 """Загрузка задач и запись ответов."""
 import json
 import os
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,7 +46,7 @@ def load_tasks(tasks_dir: Path):
 
 def find_budget(tasks_dir: Path):
     """Ищет бюджет токенов: env -> файлы в каталоге задач. None, если неизвестен."""
-    for k in ("TOKEN_BUDGET", "BUDGET", "LLM_BUDGET", "OUTPUT_TOKEN_BUDGET"):
+    for k in ("BUDGET", "TOKEN_BUDGET", "LLM_BUDGET", "OUTPUT_TOKEN_BUDGET"):  # организаторы: BUDGET
         v = os.environ.get(k)
         if v:
             try:
@@ -69,41 +70,81 @@ def find_budget(tasks_dir: Path):
                             return float(j[k])
             except Exception:  # noqa: BLE001, S110 - нечитаемый файл бюджета пропускаем
                 pass
-    # docker run передаёт только LLM_BASE_URL/LLM_API_KEY, поэтому бюджет из регламента
-    # (~100k выходных токенов) зашит по умолчанию. DEFAULT_BUDGET=0 - считать бюджет неизвестным.
+    # Если BUDGET не передан, работаем с бюджетом организаторов: 100k выходных токенов.
+    # DEFAULT_BUDGET=0 - считать бюджет неизвестным.
     v = float(os.environ.get("DEFAULT_BUDGET", "100000"))
     return v if v > 0 else None
+
+
+def can_write(directory: Path) -> bool:
+    """Контейнер работает без capabilities: root не пишет в чужой каталог без прав на запись."""
+    probe = directory / ".write_probe"
+    try:
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def write_file(path: Path, text: str):
+    """Пишет файл. Если сам файл закрыт от записи, а каталог нет, заменяет файл через переименование."""
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError as first:
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            raise first from None
 
 
 class AnswerWriter:
     """Пишет answer.txt рядом с task.json сразу после решения + общий файл решений (если задан).
 
-    Для невыполнимой задачи файл не создаётся (требование организаторов).
+    Для невыполнимой задачи файл не создаётся (требование организаторов). Ошибка записи не должна
+    пройти незаметно: иначе в логе будут баллы, а на деле ни одного ответа. Если каталог задачи закрыт,
+    ответ дублируется в OUT и в лог.
     """
 
     def __init__(self, out_path=None):
         self.out_path = Path(out_path) if out_path else None
         self.solutions = {}
 
-    def write(self, task: Task, answer: str):
+    def write(self, task: Task, answer: str) -> bool:
+        """True, если ответ сохранён хотя бы в одном месте."""
         answer = str(answer).strip()
         with _lock:
-            # организаторы: answer.txt кладётся рядом с task.json (не в workspace/)
-            for p in (task.dir / "answer.txt",):
-                try:
-                    p.write_text(answer + "\n", encoding="utf-8")
-                except OSError:
-                    pass
+            in_task_dir = False
+            try:
+                write_file(task.dir / "answer.txt", answer + "\n")
+                in_task_dir = True
+            except OSError as e:
+                print(f"ERROR cannot write answer for {task.task_id}: {e}", file=sys.stderr, flush=True)
             self.solutions[task.task_id] = answer
-            if self.out_path:
-                try:
-                    p = self.out_path
-                    if p.is_dir() or str(p).endswith("/"):
-                        p = p / "solutions.json"
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    tmp = p.with_suffix(p.suffix + ".tmp")
-                    tmp.write_text(json.dumps(self.solutions, ensure_ascii=False, indent=1),
-                                   encoding="utf-8")
-                    os.replace(tmp, p)
-                except OSError:
-                    pass
+            in_out = self._write_out(task, answer, in_task_dir)
+            if not in_task_dir:  # последняя страховка: ответ останется хотя бы в логе запуска
+                print(f"ANSWER {task.task_id} {answer}", flush=True)
+            return in_task_dir or in_out
+
+    def _write_out(self, task, answer, in_task_dir):
+        if not self.out_path:
+            return False
+        try:
+            p = self.out_path
+            as_dir = p.is_dir() or str(p).endswith("/")
+            if as_dir:
+                p = p / "solutions.json"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_suffix(p.suffix + ".tmp")
+            tmp.write_text(json.dumps(self.solutions, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, p)
+            if as_dir and not in_task_dir:
+                d = self.out_path / task.dir.name
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "answer.txt").write_text(answer + "\n", encoding="utf-8")
+            return True
+        except OSError as e:
+            print(f"ERROR cannot write {self.out_path}: {e}", file=sys.stderr, flush=True)
+            return False

@@ -10,7 +10,7 @@ from pathlib import Path
 from . import config, solvers
 from .estimator import Estimator
 from .llm import LLM, BudgetExhausted, Ledger
-from .tasks import AnswerWriter, find_budget, load_tasks
+from .tasks import AnswerWriter, can_write, find_budget, load_tasks
 
 
 def log(*a):
@@ -52,10 +52,17 @@ class Runner:
         self.writer = AnswerWriter(out)
         self.traj_lock = threading.Lock()
         self.stats = {"fast": 0, "llm_ok": 0, "llm_fail": 0, "skipped_infeasible": 0,
-                      "skipped_budget": 0, "reward_claimed": 0.0}
+                      "skipped_budget": 0, "reward_claimed": 0.0, "answers_lost": 0}
 
     def time_left(self):
         return config.TIME_LIMIT_S - (time.time() - self.t0)
+
+    def save(self, task, answer):
+        """Баллы засчитываем, только если ответ действительно сохранён."""
+        if self.writer.write(task, answer):
+            self.stats["reward_claimed"] += task.reward
+        else:
+            self.stats["answers_lost"] += 1
 
     def traj(self, rec):
         try:
@@ -75,9 +82,8 @@ class Runner:
             plan = solvers.generic.analyze(task)
         plan.notes["analyze_s"] = round(time.time() - t, 2)
         if plan.fast_answer is not None and plan.feasible is not False:
-            self.writer.write(task, plan.fast_answer)
+            self.save(task, plan.fast_answer)
             self.stats["fast"] += 1
-            self.stats["reward_claimed"] += task.reward
             self.traj({"task_id": task.task_id, "type": task.task_type, "reward": task.reward,
                        "route": "fast", "cost": 0, "answer": plan.fast_answer})
         elif plan.feasible is False:
@@ -104,9 +110,8 @@ class Runner:
             err = f"{type(e).__name__}: {e}"
             traceback.print_exc()
         if ans is not None:
-            self.writer.write(task, ans)
+            self.save(task, ans)
             self.stats["llm_ok"] += 1
-            self.stats["reward_claimed"] += task.reward
         else:
             self.stats["llm_fail"] += 1
         self.est.observe(task.task_type, pred, tl.spent)
@@ -121,6 +126,9 @@ class Runner:
 
     def run(self):
         log(f"tasks={len(self.tasks)} budget={self.ledger.budget} fast_path={config.FAST_PATH}")
+        if self.tasks and not can_write(self.tasks[0].dir):
+            log(f"ERROR: task directories are not writable: {self.tasks_dir}. Answers go to OUT and to this "
+                "log, coding tasks cannot be repaired.")
         with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 2)) as ex:
             analyzed = list(ex.map(self.analyze_one, self.tasks))
         log(f"phase A done in {time.time() - self.t0:.1f}s: {self.stats}")
@@ -170,5 +178,7 @@ class Runner:
         self.stats["llm_calls"] = self.ledger.calls
         self.stats["tokens_spent"] = round(self.ledger.spent, 1)
         self.stats["elapsed_s"] = round(time.time() - self.t0, 1)
+        if self.stats["answers_lost"]:
+            log(f"ERROR: {self.stats['answers_lost']} answers were not saved anywhere")
         log("SUMMARY", json.dumps(self.stats))
         return self.stats
