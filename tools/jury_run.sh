@@ -12,7 +12,8 @@ set -euo pipefail
 TASKS_SRC="${1:?usage: tools/jury_run.sh <tasks-dir>}"
 IMAGE="${IMAGE:-hack:latest}"
 NETWORK="${NETWORK:-none}"
-CPUS="${CPUS:-4}"
+NPROC="$(nproc)"
+CPUS="${CPUS:-$(( NPROC < 4 ? NPROC : 4 ))}"  # the CI runner has 2 CPUs
 MEMORY="${MEMORY:-16g}"
 TIMEOUT="${TIMEOUT:-1h}"
 
