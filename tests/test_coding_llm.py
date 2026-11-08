@@ -1,4 +1,8 @@
 """Тесты LLM-пути для coding: вклейка функций, сокращённый контекст, попытки."""
+import asyncio
+
+import pytest
+
 from harness import config
 from harness.solvers.base import Plan
 from harness.solvers.coding_solver import (
@@ -27,21 +31,25 @@ def make_task(tmp_path, src=SRC, tests=TESTS, reward=1):
 
 
 class FakeLLM:
+    """Вместо агента openJiuwen: каждый запуск агента вызывает update_code с очередным ответом
+    (None - модель ничего не прислала) и останавливается, как настоящий, по stop()."""
+
     def __init__(self, replies):
-        self.replies, self.prompts, self.models = list(replies), [], []
+        self.replies, self.prompts, self.models, self.results = list(replies), [], [], []
         self.ledger = self
 
     def can_afford(self, _):
         return True
 
-    def chat(self, messages, model=None, max_tokens=None):
-        self.prompts.append(messages[0]["content"])
+    def agent(self, *, system_prompt, query, tools, model=None, max_iterations=4, max_tokens=800, stop=None):
+        self.prompts.append(system_prompt + "\n" + query)
         self.models.append(model)
-        return self.replies.pop(0), 10.0, {}
-
-
-def block(code):
-    return f"```python\n{code}```"
+        code = self.replies.pop(0)
+        if code is None:
+            return "no code"
+        update = next(t for t in tools if t.card.name == "update_code")
+        self.results.append(asyncio.run(update.invoke({"code": code})))
+        return "FINAL: DONE" if stop and stop() else "FINAL: IMPOSSIBLE"
 
 
 def test_merge_replaces_only_named_function():
@@ -100,19 +108,33 @@ def test_context_is_none_when_nothing_failed_is_named(tmp_path):
     assert failing_context([task.workspace / "mylib.py"], [task.workspace / "test_mylib.py"], "boom") is None
 
 
+@pytest.fixture(autouse=True)
+def _need_openjiuwen():
+    pytest.importorskip("openjiuwen")
+
+
 def test_llm_fix_is_merged_and_verified(tmp_path):
     task = make_task(tmp_path)
-    llm = FakeLLM([block(FIX)])
+    llm = FakeLLM([FIX])
     assert solve_llm(task, llm, Plan()) == "DONE"
     assert len(llm.prompts) == 1
+    assert llm.results == ["updated mylib.py; all tests passed"]
     assert "def helper" in (task.workspace / "mylib.py").read_text(encoding="utf-8")
-    assert "only the corrected functions".lower() in llm.prompts[0].lower()
+    assert "only the corrected functions" in llm.prompts[0].lower()
     assert "def helper" not in llm.prompts[0]
+
+
+def test_tool_reports_failing_tests(tmp_path):
+    task = make_task(tmp_path)
+    llm = FakeLLM(["def total(xs):\n    return 0\n", FIX])
+    assert solve_llm(task, llm, Plan()) == "DONE"
+    assert llm.results[0].startswith("updated mylib.py; tests failed")
+    assert "test_total" in llm.results[0]
 
 
 def test_second_attempt_sees_full_files(tmp_path):
     task = make_task(tmp_path, reward=1)
-    llm = FakeLLM([block("def total(xs):\n    return 0\n"), block(FIX)])
+    llm = FakeLLM(["def total(xs):\n    return 0\n", FIX])
     assert solve_llm(task, llm, Plan()) == "DONE"
     assert len(llm.prompts) == 2
     assert "def helper" not in llm.prompts[0]
@@ -121,13 +143,35 @@ def test_second_attempt_sees_full_files(tmp_path):
 
 def test_low_reward_task_does_not_escalate_to_reasoning_model(tmp_path):
     task = make_task(tmp_path, reward=1)
-    llm = FakeLLM(["no code", block(FIX)])
+    llm = FakeLLM([None, FIX])
     assert solve_llm(task, llm, Plan()) == "DONE"
     assert llm.models == [config.MODEL_FAST, config.MODEL_FAST]
 
 
+def test_high_reward_task_escalates_to_strong_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_REASONING", True)
+    task = make_task(tmp_path, reward=3)
+    llm = FakeLLM([None, FIX])
+    assert solve_llm(task, llm, Plan()) == "DONE"
+    assert llm.models == [config.MODEL_FAST, config.MODEL_STRONG]
+
+
 def test_failed_repair_restores_original_file(tmp_path):
     task = make_task(tmp_path)
-    bad = block("def total(xs):\n    return 0\n")
+    bad = "def total(xs):\n    return 0\n"
     assert solve_llm(task, FakeLLM([bad, bad]), Plan()) is None
+    assert (task.workspace / "mylib.py").read_text(encoding="utf-8") == SRC
+
+
+def test_budget_break_restores_original_file(tmp_path):
+    from harness.oj_agent import TaskBudgetExceeded
+
+    class Broke(FakeLLM):
+        def agent(self, **kw):
+            super().agent(**kw)
+            raise TaskBudgetExceeded("cap")
+
+    task = make_task(tmp_path)
+    with pytest.raises(TaskBudgetExceeded):
+        solve_llm(task, Broke(["def total(xs):\n    return 0\n"]), Plan())
     assert (task.workspace / "mylib.py").read_text(encoding="utf-8") == SRC

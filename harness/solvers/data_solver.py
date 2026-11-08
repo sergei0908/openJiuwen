@@ -6,13 +6,12 @@
 import csv
 import re
 
-from .. import sandbox
 from .base import (
+    FINAL_RULES,
     Plan,
+    agent_answer,
     approx_tokens,
-    clean_answer,
     extract_question,
-    is_unsolvable,
     strip_boilerplate,
 )
 
@@ -196,22 +195,17 @@ def analyze(task, fast_path=True):
     return p
 
 
-PROMPT = ("Task: {task}\n\nFiles in the current directory:\n{ctx}\n\n"
-          "Write a short Python 3 program (stdlib csv module, no pandas) that reads the file(s) "
-          "from the current directory, computes the answer and prints ONLY the final value "
-          "(an integer if the result is whole). If the answer cannot be determined exactly from the "
-          "data, print IMPOSSIBLE. Reply with one ```python block only.")
+SYSTEM = ("You answer a question about CSV data in the task directory. Read and compute with the "
+          "python tool (csv module); do not print whole files. An integer result must be printed "
+          "without decimals. " + FINAL_RULES)
 
 
 def solve_llm(task, llm, plan, strong=False):
-    from .. import config
+    from ..oj_agent import make_python_tool
     if plan.notes.get("generic"):
         from .generic import solve_generic
         return solve_generic(task, llm, plan)
     task_text = re.sub(r"\s*Use bash with python3 to compute it\.", "", strip_boilerplate(task.instruction))
-    msgs = [{"role": "user", "content": PROMPT.format(task=task_text, ctx=plan.context)}]
-    text, _cost, _meta = llm.chat(msgs, model=config.MODEL_STRONG if strong else config.MODEL_FAST,
-                                max_tokens=config.MAX_OUT_STRONG if strong else 600)
-    rc, out, _err = sandbox.run_python(sandbox.extract_code(text), task.workspace, timeout=20)
-    ans = clean_answer(sandbox.last_line(out)) if rc == 0 else None
-    return None if is_unsolvable(ans) else ans
+    query = f"Task: {task_text}\n\nFiles in the task directory:\n{plan.context}"
+    return agent_answer(llm, system_prompt=SYSTEM, query=query,
+                        tools=[make_python_tool(task.workspace)], strong=strong)

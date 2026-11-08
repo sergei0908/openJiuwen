@@ -55,3 +55,20 @@ def clean_answer(ans: str) -> str:
 
 def approx_tokens(s: str) -> int:
     return max(1, len(s) // 4)
+
+
+FINAL_RULES = ("When you know the answer, reply with exactly one line 'FINAL: <answer>' - only the value, "
+               "no units or words. If the task cannot be answered exactly from the given data, "
+               "reply 'FINAL: IMPOSSIBLE'.")
+
+
+def agent_answer(llm, *, system_prompt, query, tools, strong=False, max_tokens=600, max_iterations=3):
+    """Решение через агента openJiuwen; возвращает очищенный ответ или None."""
+    from .. import config
+    from ..oj_agent import final_answer
+    text = llm.agent(system_prompt=system_prompt, query=query, tools=tools,
+                     model=config.MODEL_STRONG if strong else config.MODEL_FAST,
+                     max_iterations=max_iterations,
+                     max_tokens=config.MAX_OUT_STRONG if strong else max_tokens)
+    ans = clean_answer(final_answer(text))
+    return None if is_unsolvable(ans) else ans

@@ -122,6 +122,33 @@ class LLM:
             else (config.MODEL_FAST, config.MODEL_ALT, config.MODEL_STRONG_ALT, config.MODEL_STRONG)
         return next((m for m in (model, *chain) if m not in self.unavailable), None)
 
+    def handle_error(self, e, current, attempt):
+        """Решение по ошибке прокси - общее для chat() и агента openJiuwen (oj_agent.BudgetModel).
+
+        Возвращает ("switch", 0) - модель недоступна, взять следующую; ("retry", пауза) - повторить;
+        ("fail", 0) - этот запрос не удался. Бросает BudgetExhausted, если бюджет закончился.
+        """
+        msg = str(e).lower()
+        if BUDGET_RE.search(msg):
+            self.ledger.exhausted = True
+            raise BudgetExhausted(str(e)) from e
+        if MODEL_RE.search(msg):
+            self.unavailable.add(current)
+            return "switch", 0
+        known = RATE_RE.search(msg)
+        if known or HTTP429_RE.search(msg):
+            # лимит частоты - это не конец бюджета, просто ждём
+            limit = config.RATE_GIVE_UP_S if known else config.UNKNOWN_429_GIVE_UP_S
+            if time.time() - self.ledger.last_ok > limit:
+                self.ledger.exhausted = True
+                raise BudgetExhausted(str(e)) from e
+            return "retry", min(20, 1.5 * (attempt + 1))
+        if self.ledger.failed():
+            raise BudgetExhausted(str(e)) from e
+        if attempt < 2:
+            return "retry", 1 + attempt
+        return "fail", 0
+
     def chat(self, messages, model=None, max_tokens=None):
         """Возвращает (text, cost, meta). Бросает BudgetExhausted, если прокси перестал отвечать."""
         if self.ledger.exhausted:
@@ -150,28 +177,13 @@ class LLM:
                 self.ledger.ok()
                 return text, cost, {"model": current, "prompt_tokens": pt,
                                     "completion_tokens": ct, "latency": time.time() - t0}
-            except Exception as e:  # любая ошибка прокси разбирается по тексту
+            except Exception as e:  # noqa: BLE001 - любая ошибка прокси разбирается в handle_error
                 last_err = e
-                msg = str(e).lower()
-                if BUDGET_RE.search(msg):
-                    self.ledger.exhausted = True
-                    raise BudgetExhausted(str(e)) from e
-                if MODEL_RE.search(msg):
-                    self.unavailable.add(current)
+                action, delay = self.handle_error(e, current, attempt)
+                if action == "switch":
                     continue
-                known = RATE_RE.search(msg)
-                if known or HTTP429_RE.search(msg):
-                    # лимит частоты - это не конец бюджета, просто ждём
-                    limit = config.RATE_GIVE_UP_S if known else config.UNKNOWN_429_GIVE_UP_S
-                    if time.time() - self.ledger.last_ok > limit:
-                        self.ledger.exhausted = True
-                        raise BudgetExhausted(str(e)) from e
-                    time.sleep(min(20, 1.5 * (attempt + 1)))
-                    continue
-                if self.ledger.failed():
-                    raise BudgetExhausted(str(e)) from e
-                if attempt < 2:
-                    time.sleep(1 + attempt)
+                if action == "retry":
+                    time.sleep(delay)
                     continue
                 break
         raise RuntimeError(f"LLM call failed: {last_err}")

@@ -7,9 +7,10 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import config, solvers
+from . import config, oj_agent, solvers
 from .estimator import Estimator
 from .llm import LLM, BudgetExhausted, Ledger
+from .oj_agent import TaskBudgetExceeded
 from .tasks import AnswerWriter, can_write, find_budget, load_tasks
 
 
@@ -17,16 +18,30 @@ def log(*a):
     print(time.strftime("%H:%M:%S"), *a, flush=True)
 
 
-class TaskBudgetExceeded(Exception):
-    pass
-
-
 class TaskLLM:
-    """Обёртка над LLM: считает расход конкретной задачи и обрывает её при перерасходе."""
+    """Бюджет одной задачи. LLM-решение идёт через агента openJiuwen (harness/oj_agent.py).
+
+    Каждый вызов модели агентом списывается и с общего бюджета, и с бюджета задачи; при
+    перерасходе задачи агент обрывается (TaskBudgetExceeded).
+    """
 
     def __init__(self, llm, cap):
         self.llm, self.cap, self.spent, self.calls = llm, cap, 0.0, []
         self.ledger = llm.ledger
+        self._lock = threading.Lock()
+
+    def record(self, model, prompt_tokens, completion_tokens, cost):
+        with self._lock:
+            self.spent += cost
+            self.calls.append({"model": model, "prompt_tokens": prompt_tokens,
+                               "completion_tokens": completion_tokens, "cost": round(cost, 1)})
+
+    def agent(self, *, system_prompt, query, tools, model=None, max_iterations=4, max_tokens=800,
+              stop=None):
+        """Запускает агента openJiuwen и возвращает его финальный текст."""
+        return oj_agent.run_agent(self.llm, self, system_prompt=system_prompt, query=query,
+                                  tools=tools, model_name=model or config.MODEL_FAST,
+                                  max_iterations=max_iterations, max_tokens=max_tokens, stop=stop)
 
     def chat(self, messages, model=None, max_tokens=None):
         if self.spent >= self.cap:
@@ -175,6 +190,7 @@ class Runner:
                 th.join(max(1, self.time_left()))
         else:
             log("LLM_BASE_URL not set - only LLM-free solutions")
+        oj_agent.shutdown()
         self.stats["llm_calls"] = self.ledger.calls
         self.stats["tokens_spent"] = round(self.ledger.spent, 1)
         self.stats["elapsed_s"] = round(time.time() - self.t0, 1)

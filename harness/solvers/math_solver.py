@@ -1,12 +1,11 @@
 """Арифметические задачи: строгий разбор шаблона (0 токенов) или LLM пишет программу."""
 import re
 
-from .. import sandbox
 from .base import (
+    FINAL_RULES,
     Plan,
+    agent_answer,
     approx_tokens,
-    clean_answer,
-    is_unsolvable,
     strip_boilerplate,
 )
 
@@ -72,21 +71,12 @@ def analyze(task, fast_path=True):
     return p
 
 
-PROMPT = ("Write a short Python 3 program (stdlib only) that computes the answer to the task "
-          "and prints ONLY the final value. Use integer arithmetic exactly as described. "
-          "Reply with one ```python block and nothing else. If the task cannot be computed, "
-          "the program must print IMPOSSIBLE.\n\nTask: {task}")
+SYSTEM = ("You solve an arithmetic word problem. Compute it with the python tool using exact integer "
+          "arithmetic, applying every step in the given order. " + FINAL_RULES)
 
 
 def solve_llm(task, llm, plan, strong=False):
-    from .. import config
+    from ..oj_agent import make_python_tool
     task_text = re.sub(r"\s*Compute it with .*$", "", strip_boilerplate(task.instruction), flags=re.DOTALL)
-    msgs = [{"role": "user", "content": PROMPT.format(task=task_text)}]
-    text, _cost, _meta = llm.chat(msgs, model=config.MODEL_STRONG if strong else config.MODEL_FAST,
-                                max_tokens=config.MAX_OUT_STRONG if strong else 600)
-    code = sandbox.extract_code(text)
-    rc, out, _err = sandbox.run_python(code, task.workspace, timeout=15)
-    ans = clean_answer(sandbox.last_line(out)) if rc == 0 else None
-    if is_unsolvable(ans):
-        return None
-    return ans
+    return agent_answer(llm, system_prompt=SYSTEM, query=task_text,
+                        tools=[make_python_tool(task.workspace)], strong=strong)
