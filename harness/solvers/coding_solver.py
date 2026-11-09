@@ -112,11 +112,29 @@ def analyze(task, fast_path=True):
 
 
 SYSTEM = ("You fix bugs in Python code so that the tests pass. Never change the tests. Call update_code "
-          "with ONLY the corrected functions, each complete; it applies them and runs the tests. If the "
-          "tests fail, fix the remaining bugs the same way. If the tests contradict each other and cannot "
-          "all pass, reply 'FINAL: IMPOSSIBLE'.")
+          "with ONLY the corrected functions, each complete, without comments; it applies them and runs the "
+          "tests. No text besides the tool call. If the tests fail, fix the remaining bugs the same way. If "
+          "the tests contradict each other and cannot all pass, reply 'FINAL: IMPOSSIBLE'.")
 QUERY = "{task}\n\n{files}\n\nCurrent test output:\n```\n{out}\n```"
 MULTI = "\n\nSeveral source files: pass `file` to update_code."
+
+
+def compact_test_output(out, limit=900):
+    """Сжатый вывод unittest для промпта: по каждому упавшему тесту - заголовок и последние строки
+    (место и текст ошибки), без трассировок и абсолютных путей. Вход модели тоже стоит денег."""
+    out = re.sub(r'File "[^"]*/([^"/]+)"', r'File "\1"', out or "")
+    summary = re.findall(r"^(?:Ran \d+ tests?.*|FAILED \(.*\)|OK)$", out, flags=re.MULTILINE)
+    body_out = re.split(r"^-+\s*\nRan \d+ tests?", out, flags=re.MULTILINE)[0]
+    blocks = re.split(r"^=+$", body_out, flags=re.MULTILINE)
+    parts = []
+    for b in blocks[1:]:
+        lines = [x for x in b.strip().splitlines() if x.strip() and not set(x.strip()) <= {"-"}]
+        if not lines:
+            continue
+        body = [x for x in lines[1:] if not x.startswith("Traceback")]
+        parts.append("\n".join([lines[0]] + body[-3:]))
+    text = "\n\n".join(parts + summary[-1:]) if parts else out.strip()
+    return text if len(text) <= limit else text[:limit] + "\n..."
 
 
 def _top_level(tree):
@@ -238,7 +256,7 @@ def solve_llm(task, llm, plan, strong=False):
                 files = "\n\n".join(f"File {t.name}:\n```python\n{t.read_text(encoding='utf-8')}```"
                                     for t in targets + tests)
             tools, state = make_coding_tools(task.workspace, {t.name for t in targets}, cmd)
-            llm.agent(system_prompt=SYSTEM, query=QUERY.format(task=task_text, files=files, out=out[-1200:]) + multi,
+            llm.agent(system_prompt=SYSTEM, query=QUERY.format(task=task_text, files=files, out=compact_test_output(out)) + multi,
                       tools=tools, model=model, max_iterations=3, max_tokens=max_out,
                       stop=lambda state=state: state["passed"])
             ok, out = run_tests(task, tests)  # проверяем сами, не веря агенту на слово

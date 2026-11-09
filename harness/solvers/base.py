@@ -61,7 +61,8 @@ FINAL_RULES = ("When you know the answer, reply with exactly one line 'FINAL: <a
                "no units or words. If the task cannot be answered exactly from the given data, "
                "reply 'FINAL: IMPOSSIBLE'.")
 # Для решателей с инструментом python: ответ печатает сам скрипт, и агент останавливается сразу.
-PRINT_FINAL = ("The script must end with print('FINAL:', answer) - that line is taken as your answer, "
+PRINT_FINAL = ("Call the python tool right away, with no text around the call. Keep the script minimal, "
+               "no comments. It must end with print('FINAL:', answer) - that line is taken as your answer, "
                "so print it only when the computation is complete. ")
 
 
