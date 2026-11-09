@@ -66,6 +66,47 @@ def contradictory_tests(tests):
     return False
 
 
+IDENTITY = {ast.Add: 0, ast.Sub: 0, ast.Mult: 1, ast.Div: 1, ast.FloorDiv: 1, ast.Pow: 1}
+
+
+def _funcs(src):
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return {}
+    return {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def _const_indices(fn):
+    return sorted(n.slice.value for n in ast.walk(fn)
+                  if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant)
+                  and isinstance(n.slice.value, int))
+
+
+def suspicious_patch(orig, fixed):
+    """Похожа ли починка перебором на подгонку под видимые тесты, а не на исправление.
+
+    Перебор меняет по одному узлу за раз, и на багах из двух правок находит «случайное» решение,
+    которое проходит видимые тесты, но не скрытые (замер на 600 задачах: 7 таких починок):
+      - нейтрализованная константа: `x // n + 1` -> `x // n + 0` (настоящий баг был ещё и в `//`);
+      - подобранный константный индекс: `ys[0]` -> `ys[1]` (правильно `ys[len(ys) // 2]`).
+    Такие починки отдаём агенту: он видит смысл функции, а не только тесты.
+    """
+    before, after = _funcs(orig), _funcs(fixed)
+    for name, fn in after.items():
+        old = before.get(name)
+        if old is None or ast.dump(old) == ast.dump(fn):
+            continue
+        for n in ast.walk(fn):
+            if isinstance(n, ast.BinOp) and type(n.op) in IDENTITY and isinstance(n.right, ast.Constant) \
+                    and n.right.value == IDENTITY[type(n.op)] and not isinstance(n.right.value, bool):
+                return f"{name}: identity {type(n.op).__name__} {n.right.value!r}"
+        new_idx = set(_const_indices(fn)) - set(_const_indices(old))
+        if new_idx:  # появился новый константный индекс - его подобрали под тест
+            return f"{name}: constant index {_const_indices(old)} -> {_const_indices(fn)}"
+    return None
+
+
 def analyze(task, fast_path=True):
     p = Plan()
     targets, tests = find_files(task.workspace)
@@ -93,8 +134,12 @@ def analyze(task, fast_path=True):
         for tgt in targets:
             fixed, partial, info = apr.repair(task.workspace, tgt, tests)
             p.notes.setdefault("apr", {})[tgt.name] = info
+            orig = tgt.read_text(encoding="utf-8")
+            why = suspicious_patch(orig, fixed if fixed is not None else partial or orig)
+            if why:  # похоже на подгонку под видимые тесты - чинить будет агент с исходного кода
+                p.notes.setdefault("apr_suspect", {})[tgt.name] = why
+                continue
             if fixed is not None:
-                orig = tgt.read_text(encoding="utf-8")
                 write_file(tgt, fixed + ("\n" if not fixed.endswith("\n") else ""))
                 ok, out = run_tests(task, tests)
                 if ok:
