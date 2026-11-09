@@ -80,6 +80,18 @@ def _usage(msg):
     return pt, ct
 
 
+# Шаблон qwen добавляет к запросу с инструментами ~250 токенов описания (замер 9.11: вход math
+# 470 токенов при ~220 по тексту запроса) - это ~25 в единицах стоимости.
+TOOL_TEMPLATE_COST = 25
+MIN_ANSWER_TOKENS = 30
+TYPICAL_ANSWER_TOKENS = 60  # типичный ответ агента (замер 9.11: 57-89 токенов выхода на вызов)
+
+
+def _call_floor(messages):
+    """Минимальная стоимость вызова: вход (по тексту + шаблон) и короткий ответ."""
+    return _approx_prompt_tokens(messages) * config.INPUT_WEIGHT + TOOL_TEMPLATE_COST + MIN_ANSWER_TOKENS
+
+
 def _approx_prompt_tokens(messages):
     return sum(len(str(getattr(m, "content", m))) for m in (messages or [])) // 3
 
@@ -107,7 +119,7 @@ def make_budget_model(llm, model_name, max_tokens):
                 task.record(used_model, pt, ct, cost)
             return cost
 
-        def _check(self):
+        def _check(self, messages=None):
             stop = STOP.get()
             res = stop() if stop is not None else None
             if res:
@@ -118,33 +130,58 @@ def make_budget_model(llm, model_name, max_tokens):
             if task is not None and task.spent >= task.cap:
                 raise TaskBudgetExceeded(f"task cap {task.cap:.0f}")
 
-        def _limit_max_tokens(self, kwargs):
-            rem = llm.ledger.remaining()
+        def _reserve_call(self, messages):
+            """Резервирует ожидаемую стоимость вызова сверх резерва задачи. Параллельные агенты иначе
+            видят один и тот же остаток и вместе выходят за бюджет. Возвращает, сколько освободить
+            после вызова; вызов, который не помещается в бюджет, не делаем."""
+            if llm.ledger.budget is None:
+                return 0.0
+            task = CURRENT_TASK.get()
+            if task is not None and not task.calls and task.res_left > 0:
+                # первый вызов задачи покрывает её собственный резерв (прогноз оценщика): иначе дешёвая
+                # задача вроде search (~27) не стартует в конце бюджета из-за грубой оценки вызова (~130)
+                return 0.0
+            need = _call_floor(messages) + TYPICAL_ANSWER_TOKENS
+            extra = max(0.0, need - (task.res_left if task is not None else 0.0))
+            if extra and not llm.ledger.try_reserve(extra):
+                raise TaskBudgetExceeded(f"budget left {llm.ledger.free():.0f}")
+            return extra
+
+        def _limit_max_tokens(self, kwargs, messages=None):
+            task = CURRENT_TASK.get()
+            rem = task.available() if task is not None else llm.ledger.free()
+            if rem != float("inf"):
+                rem -= _approx_prompt_tokens(messages) * config.INPUT_WEIGHT + TOOL_TEMPLATE_COST
             mt = kwargs.get("max_tokens") or max_tokens
             if rem != float("inf"):
-                mt = int(max(50, min(mt, rem)))
+                mt = int(max(MIN_ANSWER_TOKENS, min(mt, rem)))
             kwargs["max_tokens"] = mt
             kwargs.setdefault("temperature", 0)
 
         async def invoke(self, messages, **kwargs):
-            self._limit_max_tokens(kwargs)
+            self._limit_max_tokens(kwargs, messages)
             kwargs.pop("model", None)
             last = None
             for attempt in range(12):
-                self._check()
+                self._check(messages)
                 current = llm._fallback(model_name)
                 if current is None:  # ни одна модель не отвечает: звать больше некого
                     llm.ledger.exhausted = True
                     raise BudgetExhausted(f"no available model: {last}")
+                held = self._reserve_call(messages)
                 try:
                     async with _SLOTS:
                         r = await super().invoke(messages, model=current, **kwargs)
+                    llm.ledger.release(held)
+                    held = 0.0
                     pt, ct = _usage(r)
                     self._charge(pt, ct, messages, len(str(r.content or "")), current)
                     return r
                 except (BudgetExhausted, TaskBudgetExceeded):
+                    llm.ledger.release(held)
                     raise
                 except Exception as e:  # noqa: BLE001 - разбирает LLM.handle_error
+                    llm.ledger.release(held)
                     last = e
                     action, delay = llm.handle_error(e, current, attempt)
                     if action == "switch":
@@ -153,6 +190,9 @@ def make_budget_model(llm, model_name, max_tokens):
                         await asyncio.sleep(delay)
                         continue
                     break
+                except BaseException:  # отмена по таймауту: резерв вызова тоже возвращаем
+                    llm.ledger.release(held)
+                    raise
             raise RuntimeError(f"LLM call failed: {last}")
 
         async def stream(self, messages, **kwargs):

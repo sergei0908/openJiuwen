@@ -39,6 +39,10 @@ class Ledger:
         self.calls = 0
         self.exhausted = False
         self.fail_streak = 0
+        # Резерв под задачи, которые уже взяты в работу, но ещё не потратили свой прогноз. Без него
+        # параллельные воркеры видят один и тот же остаток, берут задачи одновременно и вместе
+        # выходят за бюджет.
+        self.reserved = 0.0
         self.last_ok = time.time()
         self._lock = threading.Lock()
 
@@ -54,8 +58,26 @@ class Ledger:
             return math.inf
         return self.budget * (1 - config.RESERVE_FRAC) - self.spent
 
+    def free(self):
+        """Остаток бюджета за вычетом резерва задач в работе."""
+        return self.remaining() - self.reserved
+
     def can_afford(self, est):
-        return not self.exhausted and self.remaining() >= est
+        return not self.exhausted and self.free() >= est
+
+    def try_reserve(self, amount):
+        """Атомарно резервирует amount под новую задачу; False, если не помещается."""
+        with self._lock:
+            if self.exhausted or self.free() < amount:
+                return False
+            if self.budget is not None:
+                self.reserved += amount
+            return True
+
+    def release(self, amount):
+        if amount > 0:
+            with self._lock:
+                self.reserved = max(0.0, self.reserved - amount)
 
     def ok(self):
         with self._lock:

@@ -26,14 +26,32 @@ class TaskLLM:
     перерасходе задачи агент обрывается (TaskBudgetExceeded).
     """
 
-    def __init__(self, llm, cap):
+    def __init__(self, llm, cap, reserve=0.0):
         self.llm, self.cap, self.spent, self.calls = llm, cap, 0.0, []
         self.ledger = llm.ledger
         self._lock = threading.Lock()
+        self.res_left = reserve if llm.ledger.budget is not None else 0.0  # резерв в Ledger.try_reserve
 
-    def record(self, model, prompt_tokens, completion_tokens, cost):
+    def _consume(self, cost):
+        """Расход сначала гасит собственный резерв задачи, остальное - из свободного остатка."""
         with self._lock:
             self.spent += cost
+            used = min(cost, self.res_left)
+            self.res_left -= used
+        self.ledger.release(used)
+
+    def available(self):
+        """Сколько эта задача ещё может потратить: свободный остаток + её неизрасходованный резерв."""
+        return self.ledger.free() + self.res_left
+
+    def finish(self):
+        with self._lock:
+            left, self.res_left = self.res_left, 0.0
+        self.ledger.release(left)
+
+    def record(self, model, prompt_tokens, completion_tokens, cost):
+        self._consume(cost)
+        with self._lock:
             self.calls.append({"model": model, "prompt_tokens": prompt_tokens,
                                "completion_tokens": completion_tokens, "cost": round(cost, 1)})
 
@@ -47,12 +65,12 @@ class TaskLLM:
     def chat(self, messages, model=None, max_tokens=None):
         if self.spent >= self.cap:
             raise TaskBudgetExceeded(f"task cap {self.cap:.0f}")
-        rem = self.ledger.remaining()
+        rem = self.available()
         if rem != float("inf") and max_tokens:
             # не заказываем больше выходных токенов, чем осталось в общем бюджете
             max_tokens = int(max(50, min(max_tokens, rem)))
         text, cost, meta = self.llm.chat(messages, model=model, max_tokens=max_tokens)
-        self.spent += cost
+        self._consume(cost)
         self.calls.append(dict(meta, cost=round(cost, 1)))
         return text, cost, meta
 
@@ -113,7 +131,7 @@ class Runner:
     # ---------- фаза B: LLM по приоритету ----------
     def solve_one(self, task, mod, plan, pred):
         cap = max(4 * pred, pred + 1500)
-        tl = TaskLLM(self.llm, cap)
+        tl = TaskLLM(self.llm, cap, reserve=pred)  # резерв уже взят в next_item
         t = time.time()
         ans, err = None, None
         try:
@@ -127,6 +145,8 @@ class Runner:
         except Exception as e:  # noqa: BLE001
             err = f"{type(e).__name__}: {e}"
             traceback.print_exc()
+        finally:
+            tl.finish()
         if ans is not None:
             self.save(task, ans)
             self.stats["llm_ok"] += 1
@@ -169,7 +189,8 @@ class Runner:
         for q in queue:
             q[0] = priority(q, self.est.predict(q[1].task_type, q[3])[1])
         queue.sort(key=lambda q: q[0], reverse=True)
-        lock = threading.Lock()
+        lock = threading.Condition()
+        active = [0]  # задач в работе: пока они идут, их резерв может вернуться в бюджет
 
         def next_item():
             with lock:
@@ -182,11 +203,21 @@ class Runner:
                         q[0] = priority(q, p_ok)
                     queue.sort(key=lambda q: q[0], reverse=True)
                     for i, q in enumerate(queue):
-                        if self.ledger.can_afford(q[4]):
+                        if self.ledger.try_reserve(q[4]):
+                            active[0] += 1
                             return queue.pop(i)
+                    if active[0]:
+                        # сейчас не помещается, но задачи в работе вернут неистраченный резерв - ждём
+                        lock.wait(timeout=5)
+                        continue
                     self.stats["skipped_budget"] += len(queue)
                     queue.clear()
                 return None
+
+        def done():
+            with lock:
+                active[0] -= 1
+                lock.notify_all()
 
         def worker():
             while True:
@@ -194,7 +225,10 @@ class Runner:
                 if item is None:
                     return
                 _, task, mod, plan, pred = item
-                self.solve_one(task, mod, plan, pred)
+                try:
+                    self.solve_one(task, mod, plan, pred)
+                finally:
+                    done()
 
         if self.llm.base:
             threads = [threading.Thread(target=worker, daemon=True) for _ in range(config.PARALLEL)]
