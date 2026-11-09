@@ -13,3 +13,4 @@ task-dir/
 tests/
 *.md
 !README.md
+data/traces/
