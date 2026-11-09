@@ -4,6 +4,7 @@
 Выход (stdout): JSON [{"passed": [...], "all": [...], "err": str|null}, ...]
 """
 import importlib.util
+import inspect
 import io
 import json
 import os
@@ -63,6 +64,10 @@ def main():
                 tm = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(tm)
                 suite = unittest.defaultTestLoader.loadTestsFromModule(tm)
+                for fname, fn in vars(tm).items():  # тесты в стиле pytest: функции test_* с assert
+                    if fname.startswith("test") and inspect.isfunction(fn) and fn.__module__ == tm.__name__ \
+                            and not inspect.signature(fn).parameters:
+                        suite.addTest(unittest.FunctionTestCase(fn))
                 cases = _ids(suite)
                 r = unittest.TestResult()
                 suite.run(r)

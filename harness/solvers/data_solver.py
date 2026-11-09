@@ -82,8 +82,11 @@ def data_exists(rows, filt):
     Товара или региона нет в файле, месяцы вне 1-12, начало диапазона больше конца.
     Товар есть, но продаж в этих месяцах нет - это не сюда: верный ответ 0.
     """
+    cols = {c.strip().lower() for c in (rows[0].keys() if rows else ()) if c}
     for col in ("product", "region"):
-        if col in filt and not any(_same(r.get(col) or "", filt[col][0]) for r in rows):
+        # столбца нет совсем - скорее мы не так прочли файл (другой разделитель, другая таблица),
+        # чем данных нет: решать «невыполнимо» по этому нельзя
+        if col in filt and col in cols and not any(_same(r.get(col) or "", filt[col][0]) for r in rows):
             return False
     if "months" in filt:
         a, b = map(int, filt["months"])
@@ -149,13 +152,20 @@ def compute_top(rows, metric, filt):
 
 
 def csv_files(ws):
-    return sorted(p for p in ws.glob("*.csv") if p.is_file())
+    """CSV задачи, в том числе в подпапках (data/sales.csv); скрытые и служебные папки пропускаем."""
+    return sorted(p for p in ws.rglob("*.csv") if p.is_file()
+                  and not any(part.startswith(".") or part == "__pycache__" for part in p.relative_to(ws).parts))
 
 
 def read_rows(path):
+    """Строки CSV; разделитель определяется по первой строке («,», «;», табуляция, «|»)."""
     try:
         with path.open(newline="", encoding="utf-8") as f:
-            return list(csv.DictReader(f))
+            head = f.readline()
+            f.seek(0)
+            counts = {d: head.count(d) for d in ",;\t|"}
+            delim = max(counts, key=counts.get) if any(counts.values()) else ","
+            return list(csv.DictReader(f, delimiter=delim))
     except (OSError, UnicodeDecodeError, csv.Error):
         return None
 
@@ -165,9 +175,10 @@ def analyze(task, fast_path=True):
     files = csv_files(task.workspace)
     q = extract_question(task.instruction)
     p.notes["question"] = q
-    # Файл, о котором спрашивают, отсутствует - данных для ответа нет.
-    have = {f.name for f in files}
-    if any(name not in have for name in re.findall(r"[\w.-]+\.csv", task.instruction)):
+    # Файл, о котором спрашивают, отсутствует - данных для ответа нет (имя или путь от папки задачи).
+    have = {f.name for f in files} | {f.relative_to(task.workspace).as_posix() for f in files}
+    named = re.findall(r"[\w./-]+\.csv", task.instruction)
+    if any(n.lstrip("./") not in have and n.rsplit("/", 1)[-1] not in have for n in named):
         p.feasible = False
         return p
     if len(files) == 1:
@@ -176,7 +187,7 @@ def analyze(task, fast_path=True):
         if rows is not None and not data_exists(rows, parsed[1] if parsed else named_values(q)):
             p.feasible = False
             return p
-        if fast_path and rows is not None and parsed and re.search(r"sales\.csv", task.instruction):
+        if fast_path and rows is not None and parsed and files[0].name == "sales.csv":
             a = compute(rows, *parsed)
             if a is not None:
                 p.fast_answer = a
@@ -189,7 +200,8 @@ def analyze(task, fast_path=True):
     preview = []
     for f in files[:3]:
         lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
-        preview.append(f"--- {f.name} ({len(lines) - 1} data rows), first lines:\n" + "\n".join(lines[:4]))
+        name = f.relative_to(task.workspace).as_posix()
+        preview.append(f"--- {name} ({len(lines) - 1} data rows), first lines:\n" + "\n".join(lines[:4]))
     p.context = "\n".join(preview)
     p.est_cost = (approx_tokens(p.context + task.instruction) + 100) * 0.1 + 160
     p.p_success = 0.85
