@@ -11,9 +11,25 @@ from .base import (
 )
 
 N = r"(\d+)"
+PCT_DOWN = r"(?:damaged|lost|spoiled|stolen|sold|removed|given away|thrown away|discarded|destroyed)"
+PCT_UP = r"(?:grows|increases|rises|goes up)"
+ROUND = r"(?: and thrown away)?(?:,)?(?: \((?P<rd>rounded down)(?: to (?:whole|full) \w+)?\))?"
+
+
+def _pct(sign):
+    """Процент от запаса. Без «rounded down» берём, только если делится нацело: иначе неясно,
+    как округлять, и решение остаётся агенту («уверен или молчит»)."""
+    def f(s, p, rd=None):
+        part, rem = divmod(s * p, 100)
+        if rem and not rd:
+            raise ValueError("ambiguous rounding")
+        return s + sign * part
+    return f
+
+
 # Каждое правило: регэксп предложения целиком -> функция (stock, *ints) -> stock
 RULES = [
-    (rf"(?:A|The) \w+ starts with {N} \w+", lambda s, a: a),
+    (rf"(?:A|The) \w+ starts with {N} (?P<unit>\w+)", lambda s, a: a),
     (rf"It ships {N} \w+ per day for {N} days?", lambda s, a, b: s - a * b),
     (rf"It ships {N} \w+", lambda s, a: s - a),
     (rf"It (?:receives|gets) {N} deliveries of {N} \w+ each", lambda s, a, b: s + a * b),
@@ -26,8 +42,33 @@ RULES = [
     (rf"(?:Then )?a customer buys {N} \w+(?: from it)?", lambda s, a: s - a),
     (r"(?:Then )?its stock grows threefold(?: after an acquisition)?", lambda s: s * 3),
     (r"(?:Then )?its stock grows twofold(?: after an acquisition)?", lambda s: s * 2),
+    (rf"(?:Then )?{N}% of (?:the|its) (?:stock|\w+) (?:is|are|gets|get) {PCT_DOWN}{ROUND}", _pct(-1)),
+    (rf"(?:Then )?(?:the|its) stock {PCT_UP} by {N}%{ROUND}", _pct(+1)),
 ]
-FINAL = re.compile(r"How many \w+ does it have at the end\?", re.IGNORECASE)
+# Лишние сведения без действия над запасом: «The warehouse has 12 employees», «It was built 7 years ago».
+# Пропускаем предложение, только если в нём нет ни слова о запасе (единицы, stock) и ни одного действия.
+FILLER = re.compile(r"(?:The|Its|It)\b[\w ]* (?:has|have|had|was|were|is|are|employs|opened|built|worked)\b[\w ]*",
+                    re.IGNORECASE)
+ACTION = re.compile(r"\b(?:ship|send|sent|sell|sold|buy|bought|receiv|get|got|deliver|lose|lost|los|give|gave|add|remov|"
+                    r"take|took|damag|spoil|steal|stole|split|doubl|tripl|grow|increas|decreas|drop|keep|kept|"
+                    r"return|order|move|transfer|donat|throw|thrown|discard|destroy|use|left|remain|stock|"
+                    r"share|half|twice|times|fold|per|each|%)", re.IGNORECASE)
+
+
+def is_filler(sent, unit):
+    if not FILLER.fullmatch(sent) or ACTION.search(sent):
+        return False
+    words = {w.lower().rstrip("s") for w in re.findall(r"[A-Za-z]+", sent)}
+    return unit.lower().rstrip("s") not in words
+FINAL = re.compile(r"How many (\w+) does it have at the end\?", re.IGNORECASE)
+
+
+def _group_names(m):
+    """Имя каждой группы по порядку (None - безымянная, это числа)."""
+    names = [None] * len(m.groups())
+    for name, idx in m.re.groupindex.items():
+        names[idx - 1] = name
+    return names
 
 
 def fast_solve(instr):
@@ -36,6 +77,7 @@ def fast_solve(instr):
     m = FINAL.search(body)
     if not m:
         return None
+    asked = m.group(1)
     body = body[:m.start()].strip()
     sentences = [s.strip() for s in re.split(r"(?<=\.)\s+", body) if s.strip()]
     if not sentences:
@@ -43,18 +85,26 @@ def fast_solve(instr):
     start = re.fullmatch(RULES[0][0], sentences[0].rstrip("."), flags=re.IGNORECASE)
     if not start:
         return None
-    stock = int(start.group(1))
+    stock, unit = int(start.group(1)), start.group("unit")
     for sent in sentences[1:]:
         sent = sent.rstrip(".")
         for pat, fn in RULES[1:]:
             mm = re.fullmatch(pat, sent, flags=re.IGNORECASE)
             if mm:
+                kw = {k: v for k, v in mm.groupdict().items() if v is not None}
+                nums = [int(v) for k, v in zip(_group_names(mm), mm.groups(), strict=True) if k is None]
                 try:
-                    stock = fn(stock, *[int(x) for x in mm.groups()])
+                    stock = fn(stock, *nums, **kw)
                 except ZeroDivisionError:
                     return "IMPOSSIBLE"
+                except ValueError:
+                    return None  # неоднозначно (округление) - отдаём агенту
                 break
         else:
+            # лишнее предложение пропускаем, только если спрашивают о той же единице, что в запасе:
+            # тогда сведения о другом (сотрудники, годы, ящики другого вида) на ответ не влияют
+            if asked.lower().rstrip("s") == unit.lower().rstrip("s") and is_filler(sent, unit):
+                continue
             return None  # незнакомое предложение - не рискуем, отдаём LLM
     return str(stock)
 
