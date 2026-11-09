@@ -1,8 +1,15 @@
 """Генератор тренировочных задач в формате организаторов (+ невыполнимые, + новые формулировки).
 
     python3 tools/gen_tasks.py --out /tmp/train --n 100 --seed 1 [--infeasible 0.2] [--novel 0.15]
+    python3 tools/gen_tasks.py --out /tmp/tr --n 200 --seed 7 --spread 1 --types coding,data_analysis
 
-novel - доля задач с формулировками, которых нет в примерах (проверка LLM-пути и устойчивости).
+novel  - доля задач с формулировками, которых нет в примерах (проверка LLM-пути и устойчивости).
+spread - доля задач с разбросом сложности (для обучения оценщика расхода): math до 8 шагов и с
+         процентами/лишними числами, search - база 5-60 человек и цепочки до 3 переходов,
+         data_analysis - до 2000 строк и другие таблицы, coding - до 12 функций и 4 багов.
+         Решения о разбросе берёт отдельный генератор случайных чисел, поэтому при --spread 0
+         наборы совпадают с прежними побайтно.
+types  - генерировать только эти типы (через запятую).
 """
 import argparse
 import json
@@ -42,11 +49,23 @@ def save(root, tid, ttype, instr, reward, expected, check, files=None, infeasibl
             p.write_text(content)
 
 
-def gen_math(r, novel):
+FILLER = ["The warehouse has {a} employees.", "It was built {a} years ago.",
+          "Its manager has worked there for {a} years.", "The building has {a} loading docks."]
+
+
+def gen_math(r, novel, rs=None):
     s = r.randint(500, 2000)
     sents = [f"A warehouse starts with {s} boxes."]
-    for _ in range(r.randint(2, 5)):
-        k = r.choice(["ship", "recv", "split", "double"] + (["sell", "triple"] if novel else []))
+    steps = r.randint(2, 5)
+    if rs:
+        steps = rs.randint(1, 8)
+        if rs.random() < 0.4:
+            sents.append(rs.choice(FILLER).format(a=rs.randint(2, 40)))
+    for _ in range(steps):
+        kinds = ["ship", "recv", "split", "double"] + (["sell", "triple"] if novel else [])
+        if rs and rs.random() < 0.2:
+            kinds = ["lose_pct"]
+        k = r.choice(kinds)
         if k == "ship":
             a, b = r.randint(5, 60), r.randint(1, 5)
             s -= a * b
@@ -69,6 +88,10 @@ def gen_math(r, novel):
         elif k == "triple":
             s *= 3
             sents.append("Then its stock grows threefold after an acquisition.")
+        elif k == "lose_pct":
+            pct = rs.choice([10, 20, 25, 50])
+            s -= s * pct // 100
+            sents.append(f"Then {pct}% of the stock is damaged and thrown away (rounded down to whole boxes).")
     instr = " ".join(sents) + " How many boxes does it have at the end? Compute it with the bash tool (python3 -c)."
     return instr, str(s), "exact_int", None, False
 
@@ -93,8 +116,11 @@ def gen_kb(r, n_people=26, n_comp=10):
     return ppl, comp, files
 
 
-def gen_search(r, novel, infeasible):
-    ppl, comp, files = gen_kb(r)
+def gen_search(r, novel, infeasible, rs=None):
+    if rs:
+        ppl, comp, files = gen_kb(r, n_people=rs.randint(5, 60), n_comp=rs.randint(3, 10))
+    else:
+        ppl, comp, files = gen_kb(r)
     names = sorted(ppl)
     p = r.choice(names)
     if infeasible:
@@ -107,6 +133,9 @@ def gen_search(r, novel, infeasible):
         exp = "N/A"
     else:
         kinds = ["born", "hq"] + (["founded", "mentor_born", "mentor"] if novel else [])
+        has_mentor = [x for x in names if ppl[x]["Mentor"] in ppl]
+        if rs and has_mentor and rs.random() < 0.3:
+            kinds = ["mentor_hq"]
         k = r.choice(kinds)
         if k == "born":
             q, exp = f"In which year was {p} born?", ppl[p]["Born"]
@@ -116,6 +145,10 @@ def gen_search(r, novel, infeasible):
             q, exp = f"When was the company that employs {p} founded?", comp[ppl[p]["Employer"]]["Founded"]
         elif k == "mentor":
             q, exp = f"Who is the mentor of {p}?", ppl[p]["Mentor"]
+        elif k == "mentor_hq":
+            p = r.choice(has_mentor)
+            q = f"In which city is the headquarters of the employer of {p}'s mentor?"
+            exp = comp[ppl[ppl[p]["Mentor"]]["Employer"]]["Headquarters"]
         else:
             m = [x for x in names if ppl[x]["Mentor"] in ppl]
             p = r.choice(m)
@@ -125,8 +158,51 @@ def gen_search(r, novel, infeasible):
     return instr, exp, "exact_str", files, infeasible
 
 
-def gen_data(r, novel, infeasible):
+DEPTS = ["sales", "support", "research", "finance"]
+SUBJECTS = ["math", "physics", "history", "art"]
+
+
+def gen_table(r, rs):
+    """Другие таблицы (не sales.csv) для разброса: сотрудники и оценки."""
+    n = rs.choice([20, 50, 200, 1000])
+    if rs.random() < 0.5:
+        rows = [(i, rs.choice(FIRST), rs.choice(DEPTS), rs.randint(30, 150) * 1000, rs.randint(21, 65))
+                for i in range(1, n + 1)]
+        csv = "id,name,department,salary,age\n" + "\n".join(",".join(map(str, x)) for x in rows) + "\n"
+        dep, age = rs.choice(DEPTS), rs.randint(25, 55)
+        kind = rs.choice(["count", "total", "max"])
+        if kind == "count":
+            q = f"How many employees in the '{dep}' department are older than {age}?"
+            exp = sum(1 for x in rows if x[2] == dep and x[4] > age)
+        elif kind == "total":
+            q = f"What is the total salary of all employees in the '{dep}' department?"
+            exp = sum(x[3] for x in rows if x[2] == dep)
+        else:
+            q = f"What is the highest salary among employees aged {age} or younger?"
+            exp = max((x[3] for x in rows if x[4] <= age), default=0)
+        head, name = "id,name,department,salary,age", "employees.csv"
+    else:
+        rows = [(i, rs.choice(SUBJECTS), rs.randint(2018, 2024), rs.randint(0, 100)) for i in range(1, n + 1)]
+        csv = "student_id,subject,year,score\n" + "\n".join(",".join(map(str, x)) for x in rows) + "\n"
+        sub, y = rs.choice(SUBJECTS), rs.randint(2018, 2024)
+        kind = rs.choice(["count", "sum"])
+        if kind == "count":
+            q = f"How many '{sub}' scores in {y} were at least 50?"
+            exp = sum(1 for x in rows if x[1] == sub and x[2] == y and x[3] >= 50)
+        else:
+            q = f"What is the sum of all '{sub}' scores from {y} onwards?"
+            exp = sum(x[3] for x in rows if x[1] == sub and x[2] >= y)
+        head, name = "student_id,subject,year,score", "grades.csv"
+    instr = f"The file {name} has columns {head} ({n} rows). " + q + " Use bash with python3 to compute it."
+    return instr, str(exp), "exact_int", {name: csv}, False
+
+
+def gen_data(r, novel, infeasible, rs=None):
+    if rs and not infeasible and rs.random() < 0.4:
+        return gen_table(r, rs)
     n = r.choice([20, 50, 100, 300])
+    if rs:
+        n = rs.choice([20, 50, 100, 300, 1000, 2000])
     rows = []
     for i in range(1, n + 1):
         rows.append((i, r.choice(REGIONS), r.choice(PRODUCTS), r.randint(1, 12), r.randint(1, 40), r.randint(10, 99)))
@@ -346,9 +422,9 @@ def hidden_test(names):
            "\nif __name__ == '__main__':\n    unittest.main()\n"
 
 
-def gen_coding(r, novel, infeasible):
-    names = r.sample(sorted(FUNCS), r.randint(4, 6))
-    n_bugs = r.randint(1, 3)
+def gen_coding(r, novel, infeasible, rs=None):
+    names = r.sample(sorted(FUNCS), rs.randint(3, 12) if rs else r.randint(4, 6))
+    n_bugs = min(len(names), rs.randint(1, 4)) if rs else r.randint(1, 3)
     buggy = set(r.sample(names, n_bugs))
     src, tests = [], []
     for nm in names:
@@ -378,20 +454,28 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--infeasible", type=float, default=0.2)
     ap.add_argument("--novel", type=float, default=0.0)
+    ap.add_argument("--spread", type=float, default=0.0)
+    ap.add_argument("--types", default=",".join(sorted(GEN)))
     a = ap.parse_args()
+    types = sorted(t.strip() for t in a.types.split(",") if t.strip())
+    unknown = set(types) - set(GEN)
+    if unknown:
+        ap.error(f"unknown types: {', '.join(sorted(unknown))}")
     r = random.Random(a.seed)
+    rs_all = random.Random(f"spread-{a.seed}")
     root = Path(a.out)
     if root.exists():
         shutil.rmtree(root)
     root.mkdir(parents=True)
     for i in range(a.n):
-        t = r.choice(sorted(GEN))
+        t = r.choice(types)
         inf = r.random() < a.infeasible and t != "math"
         novel = r.random() < a.novel
+        rs = rs_all if rs_all.random() < a.spread else None
         if t == "math":
-            res = gen_math(r, novel)
+            res = gen_math(r, novel, rs)
         else:
-            res = GEN[t](r, novel, inf)
+            res = GEN[t](r, novel, inf, rs)
         instr, exp, chk, files, inf, *hidden = res
         save(root, f"{t}_{i:04d}", t, instr, r.randint(1, 5), exp, chk, files, inf, *hidden)
     print(f"generated {a.n} tasks in {root}")
