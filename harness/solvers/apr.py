@@ -12,6 +12,7 @@
 import ast
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -335,6 +336,39 @@ def _evaluate(ws, module, tests, sources, timeout, deadline=None):
         os.unlink(cfgp)
 
 
+def _reachable_only(tree, cands, tests):
+    """Оставляет мутации в функциях и классах, до которых доходят тесты: упомянутых в тестах и всех,
+    что они вызывают (по цепочке). На файле в 500-1000 строк, где падают 2-3 функции, это сотни
+    вариантов вместо тысяч: без отбора одна сборка вариантов шла 20-90 с, и до проверки дело не доходило.
+    Код вне функций и классов не отбрасываем. Если тесты не прочитать, отбора нет."""
+    used = set()
+    for t in tests:
+        try:
+            used |= set(re.findall(r"[A-Za-z_]\w*", Path(t).read_text(encoding="utf-8")))
+        except OSError:
+            return cands
+    units = {n.name: n for n in tree.body
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    reach, todo = set(), [name for name in units if name in used]
+    while todo:
+        name = todo.pop()
+        if name in reach:
+            continue
+        reach.add(name)
+        for n in ast.walk(units[name]):
+            ref = n.id if isinstance(n, ast.Name) else n.attr if isinstance(n, ast.Attribute) else None
+            if ref in units and ref not in reach:
+                todo.append(ref)
+    if not reach:
+        return cands
+    owner = {}
+    for name, unit in units.items():
+        for n in ast.walk(unit):
+            owner[id(n)] = name
+    nodes = list(ast.walk(tree))  # тот же порядок, что в _mutations: idx - индекс узла в этом списке
+    return [m for m in cands if owner.get(id(nodes[m[1]]), None) in reach or id(nodes[m[1]]) not in owner]
+
+
 def repair(ws: Path, target: Path, tests, max_rounds=6, time_budget=10):
     """Возвращает (fixed_src | None, partial_src, info). partial_src - лучшая частичная починка."""
     t0 = time.time()
@@ -345,7 +379,7 @@ def repair(ws: Path, target: Path, tests, max_rounds=6, time_budget=10):
     except SyntaxError:
         return None, src0, {"reason": "syntax"}
     module = target.stem
-    cands = sorted(_mutations(tree), key=lambda m: m[0])
+    cands = sorted(_reachable_only(tree, _mutations(tree), tests), key=lambda m: m[0])
     base = _evaluate(ws, module, tests, [src0], 30)
     if not base:
         return None, src0, {"reason": "driver"}
@@ -365,6 +399,8 @@ def repair(ws: Path, target: Path, tests, max_rounds=6, time_budget=10):
         pool = [m for m in cands if m[1] not in used]
         srcs, ok = [], []
         for m in pool:
+            if time.time() > deadline:  # сборка вариантов сама по себе долгая на больших файлах
+                break
             try:
                 srcs.append(_apply(src0, applied + [m]))
                 ok.append(m)
