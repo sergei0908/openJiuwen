@@ -5,7 +5,7 @@
 нейросети, остальные — облегчённым агентом openJiuwen, в порядке «баллы × вероятность успеха ÷
 прогноз расхода».
 
-> Черновик 9 ноября. Цифры — из нашего журнала замеров; раздел «Как запустить» дополнит Сергей.
+> Цифры — из нашего журнала замеров (`docs/journal.md`).
 
 ## Результаты
 
@@ -129,13 +129,29 @@
 
 ## Как запустить
 
+### Как у жюри (Docker)
+
 ```bash
-docker build -t hack:latest .
-export LLM_BASE_URL=... LLM_API_KEY=...
-tools/jury_run.sh examples/tasks        # как у жюри: --read-only, --cap-drop ALL, --pids-limit 512
+docker build -t hack:latest .                     # ~3 мин с нуля, образ 1,4 ГБ (лимиты: 1000 с, 4 ГБ)
+export LLM_BASE_URL=https://api.neuraldeep.ru/v1 LLM_API_KEY=<ключ>
+BUDGET=100000 NETWORK=bridge tools/jury_run.sh examples/tasks
 ```
 
-Без Docker:
+`tools/jury_run.sh` копирует задачи во временную папку, запускает образ с флагами из регламента
+(`--read-only`, `--tmpfs /tmp`, `--cap-drop ALL`, `--security-opt no-new-privileges`, `--pids-limit 512`,
+`--memory 16g`, таймаут 1 час) и проверяет ответы `tools/score.py --strict`. Код выхода не 0, если прогон
+упал, ответ неверный или невыполнимая задача получила ответ. Без ключа и с `NETWORK=none` решается всё,
+что можно решить без модели (на примерах организаторов — 20/20 за 0 токенов). Переопределить можно только
+`IMAGE`, `NETWORK`, `CPUS` (по умолчанию не больше 4), `MEMORY`, `TIMEOUT`; в Git Bash на Windows ещё
+`PYTHON=python`.
+
+Сам запуск у жюри:
+
+```bash
+docker run ... --entrypoint python hack:latest /app/run_agent.py --tasks-dir /data/tasks
+```
+
+### Без Docker
 
 ```bash
 pip install -r requirements.txt
@@ -143,8 +159,29 @@ python run_agent.py --tasks-dir examples/tasks
 python tools/score.py examples/tasks
 ```
 
-Переменные окружения: `BUDGET` (по умолчанию 100 000), `FAST_PATH=0` — всё через модель (для замеров),
-`ORDER=est|reward|random` — порядок задач, `TRAJ_PATH` — куда писать трассы.
+### Переменные окружения
+
+| Переменная | По умолчанию | Что делает |
+|---|---|---|
+| `LLM_BASE_URL`, `LLM_API_KEY` | — | прокси организаторов; без них — только решения без модели |
+| `BUDGET` | не задан — бюджет не ограничен | бюджет в выходных токенах (10 входных = 1 выходной); у жюри 100 000 |
+| `OUT` | — | файл, куда дублируются все ответы (страховка, если в папку задач нельзя писать) |
+| `FAST_PATH` | `1` | `0` — всё через модель (для замеров) |
+| `ORDER` | `est` | порядок задач для модели: `est` (баллы × p ÷ прогноз), `reward`, `random` |
+| `TIME_LIMIT_S` | `3300` | после этого новые задачи не берутся (за 60 с до конца — уже нет) |
+| `PARALLEL`, `MAX_CONCURRENT` | `5`, `3` | задач в работе и одновременных запросов к прокси |
+| `TRAJ_PATH` | `/tmp/trajectories.jsonl` | куда писать трассы (только числа) |
+
+Ответ записывается в `answer.txt` рядом с `task.json` сразу после решения; для невыполнимой задачи файл не
+создаётся. Если в папку задачи писать нельзя, ответ уходит в `OUT` и в лог строкой `ANSWER <задача> <ответ>`.
+
+### Проверки перед сдачей
+
+```bash
+ruff check . && pytest -q                                   # ~260 тестов
+tools/jury_run.sh examples/tasks                            # 20/20
+python tools/final_eval.py --out /tmp/final --sets 2        # как у жюри, 2 набора по 100 задач, с ключом
+```
 
 ## Структура
 
