@@ -52,6 +52,26 @@ def test_mentor_chain(kb):
     assert fast_solve(q, kb) == "Osaka"
 
 
+def test_of_chain_is_understood(kb):
+    # «X of Y» вместо притяжательной формы, в том числе вперемешку
+    q = "In which city is the headquarters of the employer of Irina Smithson's mentor?"
+    assert fast_solve(q, kb) == "Osaka"
+    q = "In which city is the headquarters of the employer of the mentor of Irina Smithson?"
+    assert fast_solve(q, kb) == "Osaka"
+    assert fast_solve("In which year was the mentor of Irina Smith born?", kb) == "1961"
+
+
+def test_relative_clauses(kb):
+    assert fast_solve("When was the company that employs Irina Smith founded?", kb) == "1999"
+    assert fast_solve("What is the birth year of the person who mentors Irina Smith?", kb) == "1961"
+
+
+def test_not_understood_phrase_with_known_person_is_not_impossible(kb):
+    # формулировку не поняли, но человек из базы в вопросе есть - отдаём LLM, а не выбрасываем задачу
+    q = "In which year was the closest colleague of Boris Novak born?"
+    assert fast_solve(q, kb) is None
+
+
 def test_missing_person_is_impossible(kb):
     # человека нет в базе - задача невыполнима, токены не тратим
     assert fast_solve("In which year was Maya Sato born?", kb) == "IMPOSSIBLE"

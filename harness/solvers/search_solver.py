@@ -22,6 +22,8 @@ REL = {"employer": "employer", "company": "employer", "mentor": "mentor",
 TEMPLATES = [
     (r"In which year was (?P<s>.+?) born\?", "born"),
     (r"When was (?P<s>.+?) born\?", "born"),
+    (r"What is the birth year of (?P<s>.+?)\?", "born"),
+    (r"What year was (?P<s>.+?) born\?", "born"),
     (r"In which year was (?P<s>.+?) founded\?", "founded"),
     (r"When was (?P<s>.+?) founded\?", "founded"),
     (r"In which city is the headquarters of (?P<s>.+?)\?", "headquarters"),
@@ -56,10 +58,28 @@ def load_kb(ws: Path):
     return ents, files
 
 
+OF_CHAIN = re.compile(r"^(?:the\s+)?(?P<rel>\w+)\s+of\s+(?P<rest>.+)$", re.IGNORECASE)
+
+
+def to_possessive(s):
+    """'the employer of the mentor of X' -> "X's mentor's employer" (только для известных связей)."""
+    s = s.strip()
+    m = re.match(r"^(?:the\s+)?(?:company|organi[sz]ation|firm) (?:that|which) employs (?P<rest>.+)$", s, re.IGNORECASE)
+    if m:
+        return f"{to_possessive(m.group('rest'))}'s employer"
+    m = re.match(r"^(?:the\s+)?(?:person|one) (?:who|that) mentors (?P<rest>.+)$", s, re.IGNORECASE)
+    if m:
+        return f"{to_possessive(m.group('rest'))}'s mentor"
+    m = OF_CHAIN.match(s)
+    if m and m.group("rel").lower() in REL:
+        return f"{to_possessive(m.group('rest'))}'s {m.group('rel').lower()}"
+    return re.sub(r"^the\s+", "", s, flags=re.IGNORECASE)
+
+
 def resolve_subject(s, ents):
     """'Sergei Garcia's employer' -> сущность Fjord Data. None если цепочка рвётся."""
     s = s.strip().strip("?").strip()
-    s = re.sub(r"^the\s+", "", s, flags=re.IGNORECASE)
+    s = to_possessive(s)
     parts = re.split(r"['’]s\s+", s)
     base = parts[0].strip()
     cur = ents.get(base.lower())
@@ -88,6 +108,9 @@ def fast_solve(question, ents):
             continue
         ent, status = resolve_subject(m.group("s"), ents)
         if ent is None:
+            if status.startswith("missing:") and mentioned(question, ents):
+                # кто-то из базы в вопросе есть - значит, мы не поняли формулировку, а не данных нет
+                return None
             if status.startswith(("missing:", "missing_field")):
                 return "IMPOSSIBLE"
             continue
