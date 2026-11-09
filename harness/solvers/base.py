@@ -70,10 +70,31 @@ def agent_answer(llm, *, system_prompt, query, tools, strong=False, max_tokens=6
                  stop=None):
     """Решение через агента openJiuwen; возвращает очищенный ответ или None."""
     from .. import config
-    from ..oj_agent import final_answer
-    text = llm.agent(system_prompt=system_prompt, query=query, tools=tools,
-                     model=config.MODEL_STRONG if strong else config.MODEL_FAST,
+    from ..oj_agent import FINAL_RE, final_answer
+    model = config.MODEL_STRONG if strong else config.MODEL_FAST
+    text = llm.agent(system_prompt=system_prompt, query=query, tools=tools, model=model,
                      max_iterations=max_iterations,
                      max_tokens=config.MAX_OUT_STRONG if strong else max_tokens, stop=stop)
     ans = clean_answer(final_answer(text))
-    return None if is_unsolvable(ans) else ans
+    if not FINAL_RE.search(text or "") and not plausible_answer(ans):
+        # модель не дописала «FINAL:», и последняя строка - обрывок рассуждений («2. **Identify the
+        # employer...»). Такой мусор в answer.txt не пишем. Без инструментов (search) повтор дешёвый:
+        # просим только строку ответа; с инструментами - задачу считаем нерешённой.
+        if tools:
+            return None
+        text = llm.agent(system_prompt=system_prompt, query=query + RETRY_FINAL, tools=[], model=model,
+                         max_iterations=1, max_tokens=min(max_tokens, 40))
+        if not FINAL_RE.search(text or ""):
+            return None
+        ans = clean_answer(final_answer(text))
+    return None if is_unsolvable(ans) or not ans else ans
+
+
+RETRY_FINAL = "\n\nReply with exactly one line 'FINAL: <answer>' and nothing else. No reasoning."
+LIST_MARK = re.compile(r"^(?:\d+[.)]|[-*•#>])\s")
+
+
+def plausible_answer(a):
+    """Похожа ли строка на ответ, а не на обрывок рассуждений: короткая, одна строка, без разметки."""
+    return bool(a) and len(a) <= 80 and "\n" not in a and "**" not in a and not a.endswith(":") \
+        and not LIST_MARK.match(a) and len(a.split()) <= 8
