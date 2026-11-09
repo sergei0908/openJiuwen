@@ -24,3 +24,6 @@ venv/
 *.log
 trajectories*.jsonl
 answer.txt
+
+# openJiuwen создаёт logs/ в текущем каталоге при импорте
+logs/
