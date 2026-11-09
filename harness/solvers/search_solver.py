@@ -39,22 +39,43 @@ TEMPLATES = [
 ]
 
 
-def load_kb(ws: Path):
-    kb = ws / "kb"
-    if not kb.is_dir():
-        return None, {}
+KB_EXT = ("*.md", "*.txt", "*.markdown")
+
+
+def kb_files(ws: Path, instruction=""):
+    """Файлы базы знаний: kb/, иначе папка или файл, названные в условии, иначе все .md/.txt задачи."""
+    def listed(d):
+        return sorted(p for ext in KB_EXT for p in d.rglob(ext) if p.is_file()
+                      and not any(part.startswith(".") for part in p.relative_to(ws).parts))
+    if (ws / "kb").is_dir():
+        return listed(ws / "kb")
+    for name in re.findall(r"([\w.-]+(?:/[\w.-]+)*)/?", instruction):
+        p = ws / name
+        if name and p.is_dir() and p != ws:
+            return listed(p)
+        if p.is_file() and p.suffix in (".md", ".txt", ".markdown"):
+            return [p]
+    return listed(ws)
+
+
+def load_kb(ws: Path, instruction=""):
+    """Сущности базы: заголовок «# Имя» и поля «Ключ: значение». В одном файле может быть много
+    сущностей подряд - делим по заголовкам первого уровня."""
     ents, files = {}, {}
-    for f in sorted(kb.rglob("*.md")):
+    for f in kb_files(ws, instruction):
         txt = f.read_text(encoding="utf-8", errors="replace")
-        m = re.search(r"^#\s*(.+)$", txt, re.MULTILINE)
-        if not m:
-            continue
-        name = m.group(1).strip()
-        fields = {}
-        for k, v in re.findall(r"^([A-Za-z _-]+):\s*(.+?)\s*$", txt, re.MULTILINE):
-            fields[k.strip().lower()] = v.strip()
-        ents[name.lower()] = {"name": name, "fields": fields}
-        files[name.lower()] = txt.strip()
+        for part in re.split(r"(?m)^(?=#\s)", txt):
+            m = re.search(r"^#\s*(.+)$", part, re.MULTILINE)
+            if not m:
+                continue
+            name = m.group(1).strip()
+            fields = {}
+            for k, v in re.findall(r"^([A-Za-z _-]+):\s*(.+?)\s*$", part, re.MULTILINE):
+                fields[k.strip().lower()] = v.strip()
+            ents[name.lower()] = {"name": name, "fields": fields}
+            files[name.lower()] = part.strip()
+    if not ents:
+        return None, {}  # базу не нашли или не поняли - универсальный путь, а не «невыполнимо»
     return ents, files
 
 
@@ -151,7 +172,7 @@ def gather_context(question, ents, files, hops=2):
 
 def analyze(task, fast_path=True):
     p = Plan()
-    ents, files = load_kb(task.workspace)
+    ents, files = load_kb(task.workspace, task.instruction)
     q = extract_question(task.instruction)
     p.notes["question"] = q
     if ents is None:

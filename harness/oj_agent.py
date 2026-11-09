@@ -209,7 +209,7 @@ def make_coding_tools(ws: Path, editable, test_cmd):
     from openjiuwen.core.foundation.tool.tool import tool
 
     from . import sandbox
-    from .solvers.coding_solver import compact_test_output, merge_reply
+    from .solvers.coding_solver import NO_TESTS, compact_test_output, merge_reply
     from .tasks import write_file
 
     editable = sorted(editable)
@@ -224,7 +224,10 @@ def make_coding_tools(ws: Path, editable, test_cmd):
               "file": {"type": "string", "description": "file name; may be omitted if there is one file"}},
               "required": ["code"]})
     async def update_code(code: str, file: str = "") -> str:
-        name = Path(file).name if file else (editable[0] if len(editable) == 1 else "")
+        name = file.strip().lstrip("./") if file else (editable[0] if len(editable) == 1 else "")
+        if name not in editable:  # модель назвала файл без папки: «mylib.py» вместо «src/mylib.py»
+            same = [e for e in editable if Path(e).name == Path(name).name]
+            name = same[0] if len(same) == 1 else name
         if name not in editable:
             return f"error: choose file from: {', '.join(editable)}"
         path = ws / name
@@ -234,7 +237,7 @@ def make_coding_tools(ws: Path, editable, test_cmd):
         await asyncio.to_thread(write_file, path, merged)
         state["updates"] += 1
         rc, out, err = await asyncio.to_thread(sandbox.run, test_cmd, ws, 60)
-        if rc == 0:
+        if rc == 0 and not NO_TESTS.search(out + "\n" + err):
             state["passed"] = True
             return f"updated {name}; all tests passed"
         return f"updated {name}; tests failed:\n" + compact_test_output(out + "\n" + err)

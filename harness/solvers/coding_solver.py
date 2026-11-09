@@ -15,26 +15,53 @@ from ..tasks import can_write, write_file
 from . import apr
 from .base import Plan, approx_tokens, strip_boilerplate
 
+SKIP_DIRS = {"__pycache__", "venv", ".venv", "node_modules", "site-packages"}
+NOT_TARGETS = {"__init__.py", "conftest.py", "setup.py"}
+RUNNER = str(Path(__file__).resolve().parent.parent / "testrun.py")
+NO_TESTS = re.compile(r"^Ran 0 tests|NO TESTS RAN|no tests ran|collected 0 items", re.MULTILINE)
+
 
 def find_files(ws: Path):
-    py = sorted(p for p in ws.glob("*.py") if p.is_file())
+    """Код и тесты задачи, в том числе в подпапках (tests/, src/); служебные папки пропускаем."""
+    py = sorted(p for p in ws.rglob("*.py") if p.is_file()
+                and not any(part.startswith(".") or part in SKIP_DIRS for part in p.relative_to(ws).parts))
     tests = [p for p in py if p.name.startswith("test") or p.name.endswith("_test.py")]
-    targets = [p for p in py if p not in tests]
+    targets = [p for p in py if p not in tests and p.name not in NOT_TARGETS]
     return targets, tests
 
 
+def rel(path, ws):
+    """Имя файла задачи относительно её папки: «mylib.py» или «src/mylib.py»."""
+    return path.relative_to(ws).as_posix()
+
+
+def _unittest_style(tests):
+    try:
+        return all("unittest" in t.read_text(encoding="utf-8", errors="replace") for t in tests)
+    except OSError:
+        return False
+
+
 def test_cmd(task, tests):
-    m = re.search(r"`(python3? [^`]+)`", task.instruction)
-    if m:
-        return m.group(1).split()
-    return ["python3", "-m", "unittest", "-q"] + [t.stem for t in tests]
+    """Команда тестов. Если тесты в корне и на unittest - как в условии или `python -m unittest`.
+    Тесты в подпапке или в стиле pytest - наш запускатель harness/testrun.py (pytest в контейнере нет):
+    иначе `python test_x.py` с функциями-тестами «проходит», ничего не проверив."""
+    ws = task.workspace
+    flat = all(t.parent == ws for t in tests)
+    if flat and _unittest_style(tests):
+        m = re.search(r"`(python3? [^`]+)`", task.instruction)
+        if m:
+            return m.group(1).split()
+        return ["python3", "-m", "unittest", "-q"] + [t.stem for t in tests]
+    return ["python3", RUNNER] + [str(t.relative_to(ws)) for t in tests]
 
 
 def run_tests(task, tests):
     cmd = test_cmd(task, tests)
     cmd[0] = sandbox.PY
     rc, out, err = sandbox.run(cmd, task.workspace, timeout=60)
-    return rc == 0, (out + "\n" + err).strip()
+    out = (out + "\n" + err).strip()
+    return rc == 0 and not NO_TESTS.search(out), out
 
 
 def can_fix(ws, targets):
@@ -69,7 +96,8 @@ def contradictory_tests(tests):
 def analyze(task, fast_path=True):
     p = Plan()
     targets, tests = find_files(task.workspace)
-    p.notes.update(targets=[t.name for t in targets], tests=[t.name for t in tests])
+    ws = task.workspace
+    p.notes.update(targets=[rel(t, ws) for t in targets], tests=[rel(t, ws) for t in tests])
     if not tests or not targets:
         p.notes["generic"] = True
         p.est_cost = 2500
@@ -103,7 +131,7 @@ def analyze(task, fast_path=True):
                     return p
                 write_file(tgt, orig)
             elif partial and info.get("applied"):
-                p.notes.setdefault("partial", {})[tgt.name] = partial
+                p.notes.setdefault("partial", {})[rel(tgt, ws)] = partial
     size = sum(len(t.read_text(encoding="utf-8")) for t in targets + tests)
     src_tok = sum(approx_tokens(t.read_text(encoding="utf-8")) for t in targets)
     p.est_cost = (size / 8 + 150) * 0.1 + src_tok * 0.35 + 35
@@ -230,7 +258,8 @@ def solve_llm(task, llm, plan, strong=False):
         from .generic import solve_generic
         return solve_generic(task, llm, plan)
     targets, tests = find_files(task.workspace)
-    originals = {t.name: t.read_text(encoding="utf-8") for t in targets}
+    ws = task.workspace
+    originals = {rel(t, ws): t.read_text(encoding="utf-8") for t in targets}
     passed = False
     try:
         # стартуем с частичной APR-починки: меньше багов остаётся модели
@@ -253,9 +282,9 @@ def solve_llm(task, llm, plan, strong=False):
             # первая попытка - только упавшие тесты и нужные функции, вторая - файлы целиком
             files = failing_context(targets, tests, out) if attempt == 0 else None
             if files is None:
-                files = "\n\n".join(f"File {t.name}:\n```python\n{t.read_text(encoding='utf-8')}```"
+                files = "\n\n".join(f"File {rel(t, ws)}:\n```python\n{t.read_text(encoding='utf-8')}```"
                                     for t in targets + tests)
-            tools, state = make_coding_tools(task.workspace, {t.name for t in targets}, cmd)
+            tools, state = make_coding_tools(task.workspace, {rel(t, ws) for t in targets}, cmd)
             llm.agent(system_prompt=SYSTEM, query=QUERY.format(task=task_text, files=files, out=compact_test_output(out)) + multi,
                       tools=tools, model=model, max_iterations=3, max_tokens=max_out,
                       stop=lambda state=state: state["passed"])

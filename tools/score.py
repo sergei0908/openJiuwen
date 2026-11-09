@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
+
 
 def check(d: Path, j: dict):
     ans_p = d / "answer.txt"
@@ -25,7 +27,12 @@ def check(d: Path, j: dict):
     if chk == "unittest":
         ws = d / "workspace"
         tests = sorted(ws.glob("test*.py"))
-        p = subprocess.run([sys.executable, tests[0].name], cwd=ws, capture_output=True, text=True, timeout=60, check=False)
+        if tests and "unittest" in tests[0].read_text():
+            cmd = [sys.executable, tests[0].name]
+        else:  # тесты в стиле pytest или в подпапке - тем же запускателем, что и харнесс
+            tests = sorted(p for p in ws.rglob("test*.py") if "__pycache__" not in p.parts)
+            cmd = [sys.executable, str(ROOT / "harness" / "testrun.py")] + [str(t.relative_to(ws)) for t in tests]
+        p = subprocess.run(cmd, cwd=ws, capture_output=True, text=True, timeout=60, check=False)
         if p.returncode or ans != "DONE":
             return False, "tests_fail" if p.returncode else "ok"
         hidden = d / "hidden_test.py"
