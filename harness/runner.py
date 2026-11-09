@@ -7,7 +7,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import config, oj_agent, solvers
+from . import config, features, oj_agent, solvers
 from .estimator import Estimator
 from .llm import LLM, BudgetExhausted, Ledger
 from .oj_agent import TaskBudgetExceeded
@@ -96,15 +96,17 @@ class Runner:
             log("analyze error", task.task_id, e)
             plan = solvers.generic.analyze(task)
         plan.notes["analyze_s"] = round(time.time() - t, 2)
+        plan.notes["features"] = features.extract(task, plan)
         if plan.fast_answer is not None and plan.feasible is not False:
             self.save(task, plan.fast_answer)
             self.stats["fast"] += 1
             self.traj({"task_id": task.task_id, "type": task.task_type, "reward": task.reward,
-                       "route": "fast", "cost": 0, "answer": plan.fast_answer})
+                       "route": "fast", "cost": 0, "answer": plan.fast_answer,
+                       "features": plan.notes["features"]})
         elif plan.feasible is False:
             self.stats["skipped_infeasible"] += 1
             self.traj({"task_id": task.task_id, "type": task.task_type, "reward": task.reward,
-                       "route": "infeasible", "cost": 0})
+                       "route": "infeasible", "cost": 0, "features": plan.notes["features"]})
         return task, mod, plan
 
     # ---------- фаза B: LLM по приоритету ----------
@@ -134,8 +136,7 @@ class Runner:
                    "route": "llm", "pred_cost": round(pred, 1), "cost": round(tl.spent, 1),
                    "ok": ans is not None, "answer": ans, "err": err, "calls": tl.calls,
                    "secs": round(time.time() - t, 1),
-                   "features": {k: v for k, v in plan.notes.items()
-                                if k in ("prompt_tokens", "targets", "tests")}})
+                   "features": plan.notes.get("features", {})})
         log(f"{task.task_id}: {'OK ' + str(ans)[:30] if ans else 'FAIL ' + str(err)} "
             f"cost={tl.spent:.0f} pred={pred:.0f} spent_total={self.ledger.spent:.0f}")
 
