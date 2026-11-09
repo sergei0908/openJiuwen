@@ -187,7 +187,9 @@ def analyze(task, fast_path=True):
 SYSTEM = ("You fix bugs in Python code so that the tests pass. Never change the tests. Call update_code "
           "with ONLY the corrected functions, each complete, without comments; it applies them and runs the "
           "tests. No text besides the tool call. If the tests fail, fix the remaining bugs the same way. If "
-          "the tests contradict each other and cannot all pass, reply 'FINAL: IMPOSSIBLE'.")
+          "the tests contradict each other and cannot all pass, reply 'FINAL: IMPOSSIBLE'. Hidden tests "
+          "check other inputs: make each function correct in general, as its name and docstring say "
+          "(e.g. an average uses true division), not only for the cases shown.")
 QUERY = "{task}\n\n{files}\n\nCurrent test output:\n```\n{out}\n```"
 MULTI = "\n\nSeveral source files: pass `file` to update_code."
 
