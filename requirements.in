@@ -2,3 +2,7 @@
 #   uv pip compile requirements.in -o requirements.txt --python-version 3.11 --python-platform x86_64-unknown-linux-gnu
 openjiuwen==0.1.19
 httpx==0.28.1
+# filelock 4.x считает блокировку принадлежащей asyncio-задаче, а openJiuwen 0.1.19 берёт и отпускает её
+# из разных задач: отпускание падает, у каждой блокировки остаются поток и SQLite-файл (~14 потоков и
+# ~28 файлов на агента -> упор в --pids-limit 512 и лимит открытых файлов). С 3.x утечки нет.
+filelock>=3.25,<4

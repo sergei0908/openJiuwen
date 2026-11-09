@@ -125,3 +125,36 @@ def test_failed_script_final_is_ignored(tmp_path):
     tool = make_python_tool(tmp_path, state)
     asyncio.run(tool.invoke({"code": "print('FINAL: 1')\nraise SystemExit(1)"}))
     assert state == {}
+
+
+def test_agents_do_not_leak_threads_or_files(mock_proxy, tmp_path):
+    """filelock 4.x + openJiuwen 0.1.19: каждая файловая блокировка оставляла поток и SQLite-файл
+    (~14 потоков на агента), и под --pids-limit 512 прогон падал с «can't start new thread»."""
+    import os
+    import threading
+
+    from harness.llm import LLM, Ledger
+    from harness.oj_agent import make_python_tool
+    from harness.runner import TaskLLM
+
+    llm = LLM(Ledger(budget=10_000))
+
+    def run_one():
+        task = TaskLLM(llm, cap=1_000)
+        task.agent(system_prompt="Use the python tool.", query="Compute 40 + 2.",
+                   tools=[make_python_tool(tmp_path)], max_iterations=3)
+
+    def fds():
+        return len(os.listdir("/proc/self/fd")) if os.path.isdir("/proc/self/fd") else 0
+
+    def rwlock_threads():
+        return sum(t.name.startswith("openjiuwen-rwlock") for t in threading.enumerate())
+
+    run_one()  # первый агент поднимает общий цикл и служебные потоки
+    threads, files, rw = threading.active_count(), fds(), rwlock_threads()
+    for _ in range(3):
+        run_one()
+    # с утечкой было бы +42 потока и +84 файла
+    assert threading.active_count() <= threads + 2
+    assert fds() <= files + 6
+    assert rwlock_threads() <= rw
