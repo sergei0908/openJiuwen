@@ -1,9 +1,11 @@
 """Загрузка задач и запись ответов."""
 import json
 import os
+import re
 import sys
 import threading
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
 _lock = threading.Lock()
@@ -100,6 +102,27 @@ def write_file(path: Path, text: str):
             raise first from None
 
 
+_WORD_NUM = {"one": 1, "two": 2, "three": 3, "four": 4}
+DECIMALS_RE = re.compile(r"\b(\d|one|two|three|four)\s+decimals?\b", re.IGNORECASE)
+NUMBER_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)")
+
+
+def match_decimals(instruction, answer):
+    """«Round to 2 decimal places» и ответ-число: ровно столько знаков после точки (27.5 -> 27.50).
+
+    Проверка может сравнивать строки, а решатели и модель отбрасывают нули в конце. Значение числа не
+    меняется (лишние знаки округляются по-школьному). Если в условии разное число знаков или ответ не
+    одно число, ответ остаётся как есть."""
+    counts = {int(n) if n.isdigit() else _WORD_NUM[n.lower()] for n in DECIMALS_RE.findall(instruction or "")}
+    if len(counts) != 1 or not NUMBER_RE.fullmatch(answer):
+        return answer
+    places = counts.pop()
+    try:
+        return str(Decimal(answer).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP))
+    except InvalidOperation:
+        return answer
+
+
 class AnswerWriter:
     """Пишет answer.txt рядом с task.json сразу после решения + общий файл решений (если задан).
 
@@ -114,7 +137,7 @@ class AnswerWriter:
 
     def write(self, task: Task, answer: str) -> bool:
         """True, если ответ сохранён хотя бы в одном месте."""
-        answer = str(answer).strip()
+        answer = match_decimals(task.instruction, str(answer).strip())
         with _lock:
             in_task_dir = False
             try:
