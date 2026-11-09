@@ -1,0 +1,128 @@
+{
+ "version": 2,
+ "trained_on": 441,
+ "types": {
+  "coding": {
+   "kind": "loglin",
+   "n": 108,
+   "cv_mae": 22.5,
+   "cv_mae_mean": 40.2,
+   "mean": 176.8,
+   "p_success": 0.991,
+   "err_q90": 38.2,
+   "clip": [
+    5.0,
+    1188.3
+   ],
+   "intercept": 4.264564041985169,
+   "coef": {
+    "coding_fail_chars": 0.0006811731644834096,
+    "coding_failing": -0.01718956751817148,
+    "coding_funcs": -0.02628914328657114,
+    "coding_src_lines": 0.012517379683763208,
+    "coding_tests": -0.02628914328656765
+   },
+   "fill": {
+    "coding_fail_chars": 1197.7962962962963,
+    "coding_failing": 2.0833333333333335,
+    "coding_funcs": 7.287037037037037,
+    "coding_src_lines": 37.861111111111114,
+    "coding_tests": 7.287037037037037
+   },
+   "log": true,
+   "lambda": 0.1
+  },
+  "data_analysis": {
+   "kind": "linear",
+   "n": 113,
+   "cv_mae": 2.8,
+   "cv_mae_mean": 5.6,
+   "mean": 141.1,
+   "p_success": 0.991,
+   "err_q90": 5.1,
+   "clip": [
+    5.0,
+    500.4
+   ],
+   "intercept": 62.67422710635482,
+   "coef": {
+    "context_chars": -0.6779787803092829,
+    "data_agg": 1.7262698682132078,
+    "data_bytes": -0.00039774728886244476,
+    "data_cols": 5.531601564120355,
+    "data_conditions": 1.4509380237783092,
+    "data_rows": 0.011413264745956818,
+    "instr_chars": 0.38521511018378113
+   },
+   "fill": {
+    "context_chars": 148.02654867256638,
+    "data_agg": 0.8053097345132744,
+    "data_bytes": 13246.309734513274,
+    "data_cols": 5.451327433628318,
+    "data_conditions": 1.6725663716814159,
+    "data_rows": 539.6460176991151,
+    "instr_chars": 373.5221238938053
+   },
+   "log": false,
+   "lambda": 0.1
+  },
+  "math": {
+   "kind": "linear",
+   "n": 115,
+   "cv_mae": 5.8,
+   "cv_mae_mean": 19.0,
+   "mean": 116.4,
+   "p_success": 0.966,
+   "err_q90": 9.2,
+   "clip": [
+    5.0,
+    815.7
+   ],
+   "intercept": 55.34570473327821,
+   "coef": {
+    "instr_chars": 0.037452806372992524,
+    "math_numbers": 1.0338716794994955,
+    "math_percent": 9.071765821282652,
+    "math_sentences": 3.4878465376353436
+   },
+   "fill": {
+    "instr_chars": 585.2086956521739,
+    "math_numbers": 6.582608695652174,
+    "math_percent": 0.5304347826086957,
+    "math_sentences": 7.878260869565217
+   },
+   "log": false,
+   "lambda": 10.0
+  },
+  "search": {
+   "kind": "loglin",
+   "n": 105,
+   "cv_mae": 9.9,
+   "cv_mae_mean": 15.3,
+   "mean": 36.3,
+   "p_success": 0.888,
+   "err_q90": 26.5,
+   "clip": [
+    5.0,
+    253.2
+   ],
+   "intercept": 2.867469684594554,
+   "coef": {
+    "context_chars": 0.0020900354518275156,
+    "instr_chars": -0.0010787460917425235,
+    "kb_chars": 0.0004821428587399991,
+    "kb_files": -0.03178034223125882,
+    "search_hops": 0.2730527211526497
+   },
+   "fill": {
+    "context_chars": 238.93333333333334,
+    "instr_chars": 360.54285714285714,
+    "kb_chars": 2589.209523809524,
+    "kb_files": 38.857142857142854,
+    "search_hops": 1.8
+   },
+   "log": true,
+   "lambda": 0.1
+  }
+ }
+}
