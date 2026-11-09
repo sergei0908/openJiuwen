@@ -209,7 +209,7 @@ def make_coding_tools(ws: Path, editable, test_cmd):
     from openjiuwen.core.foundation.tool.tool import tool
 
     from . import sandbox
-    from .solvers.coding_solver import merge_reply
+    from .solvers.coding_solver import compact_test_output, merge_reply
     from .tasks import write_file
 
     editable = sorted(editable)
@@ -237,7 +237,7 @@ def make_coding_tools(ws: Path, editable, test_cmd):
         if rc == 0:
             state["passed"] = True
             return f"updated {name}; all tests passed"
-        return f"updated {name}; tests failed:\n" + _clip((out + "\n" + err).strip())
+        return f"updated {name}; tests failed:\n" + compact_test_output(out + "\n" + err)
 
     return [update_code], state
 

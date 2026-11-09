@@ -6,6 +6,7 @@ import pytest
 from harness import config
 from harness.solvers.base import Plan
 from harness.solvers.coding_solver import (
+    compact_test_output,
     failing_context,
     merge_reply,
     run_tests,
@@ -106,6 +107,22 @@ def test_context_follows_calls_inside_library(tmp_path):
 def test_context_is_none_when_nothing_failed_is_named(tmp_path):
     task = make_task(tmp_path)
     assert failing_context([task.workspace / "mylib.py"], [task.workspace / "test_mylib.py"], "boom") is None
+
+
+def test_compact_output_keeps_failures_and_drops_paths(tmp_path):
+    task = make_task(tmp_path)
+    _, out = run_tests(task, [task.workspace / "test_mylib.py"])
+    short = compact_test_output(out)
+    assert "FAIL: test_total" in short
+    assert "AssertionError: -3 != 3" in short
+    assert "FAILED (failures=1)" in short
+    assert str(tmp_path) not in short
+    assert "Traceback" not in short
+    assert len(short) < len(out)
+
+
+def test_compact_output_passes_unknown_format_through():
+    assert compact_test_output("weird output") == "weird output"
 
 
 @pytest.fixture(autouse=True)
