@@ -40,3 +40,8 @@ INPUT_WEIGHT = 0.1
 RESERVE_FRAC = float(_env("RESERVE_FRAC", "0.03"))
 
 TRAJ_PATH = _env("TRAJ_PATH", "/tmp/trajectories.jsonl")
+
+# Порядок LLM-задач в фазе B. est - «баллы × вероятность успеха ÷ прогноз расхода» (основной);
+# reward - только по баллам; random - случайно. reward и random нужны для сравнения на кривой бюджета.
+ORDER = _env("ORDER", "est")
+ORDER_SEED = int(_env("ORDER_SEED", "0"))

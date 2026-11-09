@@ -1,6 +1,7 @@
 """Планировщик: бесплатные решения -> отбор задач по ценности/стоимости -> LLM-решение."""
 import json
 import os
+import random
 import threading
 import time
 import traceback
@@ -141,7 +142,8 @@ class Runner:
             f"cost={tl.spent:.0f} pred={pred:.0f} spent_total={self.ledger.spent:.0f}")
 
     def run(self):
-        log(f"tasks={len(self.tasks)} budget={self.ledger.budget} fast_path={config.FAST_PATH}")
+        log(f"tasks={len(self.tasks)} budget={self.ledger.budget} fast_path={config.FAST_PATH} "
+            f"order={config.ORDER}")
         if self.tasks and not can_write(self.tasks[0].dir):
             log(f"ERROR: task directories are not writable: {self.tasks_dir}. Answers go to OUT and to this "
                 "log, coding tasks cannot be repaired.")
@@ -153,8 +155,19 @@ class Runner:
         for task, mod, plan in analyzed:
             if plan.fast_answer is not None or plan.feasible is False:
                 continue
-            pred, p_ok = self.est.predict(task.task_type, plan)
-            queue.append([task.reward * p_ok / pred, task, mod, plan, pred])
+            pred, _ = self.est.predict(task.task_type, plan)
+            queue.append([0.0, task, mod, plan, pred])
+        rank = {id(q[1]): i for i, q in enumerate(random.Random(config.ORDER_SEED).sample(queue, len(queue)))}
+
+        def priority(q, p_ok):
+            if config.ORDER == "reward":
+                return q[1].reward - 1e-6 * q[4]  # при равных баллах - дешевле раньше
+            if config.ORDER == "random":
+                return -rank[id(q[1])]
+            return q[1].reward * p_ok / q[4]
+
+        for q in queue:
+            q[0] = priority(q, self.est.predict(q[1].task_type, q[3])[1])
         queue.sort(key=lambda q: q[0], reverse=True)
         lock = threading.Lock()
 
@@ -166,7 +179,7 @@ class Runner:
                     # пересчитываем прогноз с учётом онлайн-калибровки
                     for q in queue:
                         q[4], p_ok = self.est.predict(q[1].task_type, q[3])
-                        q[0] = q[1].reward * p_ok / q[4]
+                        q[0] = priority(q, p_ok)
                     queue.sort(key=lambda q: q[0], reverse=True)
                     for i, q in enumerate(queue):
                         if self.ledger.can_afford(q[4]):
