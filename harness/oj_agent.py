@@ -137,6 +137,10 @@ def make_budget_model(llm, model_name, max_tokens):
             if llm.ledger.budget is None:
                 return 0.0
             task = CURRENT_TASK.get()
+            if task is not None and not task.calls and task.res_left > 0:
+                # первый вызов задачи покрывает её собственный резерв (прогноз оценщика): иначе дешёвая
+                # задача вроде search (~27) не стартует в конце бюджета из-за грубой оценки вызова (~130)
+                return 0.0
             need = _call_floor(messages) + TYPICAL_ANSWER_TOKENS
             extra = max(0.0, need - (task.res_left if task is not None else 0.0))
             if extra and not llm.ledger.try_reserve(extra):
