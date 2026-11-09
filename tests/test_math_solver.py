@@ -63,3 +63,38 @@ def test_grows_threefold():
 def test_grows_twofold():
     text = ("A warehouse starts with 25 boxes. Then its stock grows twofold after an acquisition." + TAIL)
     assert fast_solve(text) == "50"
+
+
+Q_END = " How many boxes does it have at the end?"
+
+
+def test_percent_with_rounding():
+    q = ("A warehouse starts with 1000 boxes. Then 25% of the stock is damaged and thrown away "
+         "(rounded down to whole boxes). It ships 10 boxes." + Q_END)
+    assert fast_solve(q) == "740"
+    q = "A warehouse starts with 999 boxes. Then 10% of the stock is lost (rounded down)." + Q_END
+    assert fast_solve(q) == "900"    # 99.9 -> списано 99
+
+
+def test_percent_without_rounding_only_when_exact():
+    assert fast_solve("A warehouse starts with 200 boxes. 50% of the stock is sold." + Q_END) == "100"
+    assert fast_solve("A warehouse starts with 999 boxes. 10% of the stock is sold." + Q_END) is None
+    assert fast_solve("A warehouse starts with 400 boxes. The stock grows by 25%." + Q_END) == "500"
+
+
+def test_filler_sentences_are_skipped():
+    q = ("A warehouse starts with 500 boxes. The warehouse has 12 employees. It ships 20 boxes. "
+         "It was built 7 years ago. Its manager has worked there for 9 years." + Q_END)
+    assert fast_solve(q) == "480"
+
+
+def test_sentences_about_the_stock_are_not_filler():
+    # упоминает единицу запаса или действие - не пропускаем, отдаём агенту
+    assert fast_solve("A warehouse starts with 500 boxes. The back room has 40 boxes." + Q_END) is None
+    assert fast_solve("A warehouse starts with 500 boxes. It has 40 boxes left over." + Q_END) is None
+    assert fast_solve("A warehouse starts with 500 boxes. The truck was sent with 40 crates." + Q_END) is None
+
+
+def test_filler_needs_same_unit_in_question():
+    q = "A warehouse starts with 500 boxes. The warehouse has 12 crates. How many crates does it have at the end?"
+    assert fast_solve(q) is None
