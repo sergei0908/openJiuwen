@@ -112,20 +112,25 @@ NUMBER_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)")
 
 
 def match_decimals(instruction, answer):
-    """«Round to 2 decimal places» и ответ-число: ровно столько знаков после точки (27.5 -> 27.50).
+    """«Round to 2 decimal places» и ответ-число с лишними знаками: округляем (27.505 -> 27.51).
 
-    Проверка может сравнивать строки, а решатели и модель отбрасывают нули в конце. Значение числа не
-    меняется (лишние знаки округляются по-школьному). Если в условии разное число знаков или ответ не
-    одно число, ответ остаётся как есть."""
+    Нули в конце не дописываем и убираем: 25.4 остаётся 25.4, а не 25.40. Так выглядит round(x, 2) в
+    Python - скорее всего, так посчитан и эталон. Если знаков не больше, чем просили, в условии разное
+    число знаков или ответ не одно число, ответ остаётся как есть."""
     asks = [x for x in re.split(r"(?<=[.?!])\s+", instruction or "") if REQUEST_RE.search(x)]
     counts = {int(n) if n.isdigit() else _WORD_NUM[n.lower()] for x in asks for n in DECIMALS_RE.findall(x)}
     if len(counts) != 1 or not NUMBER_RE.fullmatch(answer):
         return answer
     places = counts.pop()
+    if len(answer.partition(".")[2]) <= places:
+        return answer
     try:
-        return str(Decimal(answer).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP))
+        out = str(Decimal(answer).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP))
     except InvalidOperation:
         return answer
+    if "." in out:
+        out = out.rstrip("0").rstrip(".")
+    return "0" if out in ("-0", "") else out
 
 
 class AnswerWriter:
