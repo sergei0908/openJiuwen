@@ -198,14 +198,29 @@ def analyze(task, fast_path=True):
 
 
 SYSTEM = ("You answer a question about a small knowledge base. Use only the excerpt given in the "
-          "message; follow links between people and companies step by step. " + FINAL_RULES)
+          "message; follow links between people and companies. Do not write out the steps: reply with "
+          "the single line 'FINAL: <answer>'. " + FINAL_RULES)
+MULTI_HOP = (" This question needs several links. If you must check them, keep each step to a few words "
+             "on one line; the last line must be 'FINAL: <answer>'.")
+
+
+def chain_len(question):
+    """Сколько связей пройти: «the employer of X's mentor» -> 2."""
+    q = question or ""
+    return len(re.findall(r"'s\b|’s\b", q)) + len(re.findall(r"\b(?:of|that employs|who mentors)\b", q)) - \
+        int(bool(re.search(r"\b(?:headquarters|year|city|name) of\b", q)))
 
 
 def solve_llm(task, llm, plan, strong=False):
     if plan.notes.get("generic"):
         from .generic import solve_generic
         return solve_generic(task, llm, plan)
-    query = f"Knowledge base excerpt:\n{plan.context}\n\nQuestion: {plan.notes['question']}"
+    q = plan.notes["question"]
+    query = f"Knowledge base excerpt:\n{plan.context}\n\nQuestion: {q}"
+    # Длинные цепочки модель любит расписывать по шагам и при 60 токенах обрывается до «FINAL:»
+    # (замер 9.11: все 17 ошибок на 120 задачах - вопросы «headquarters of the employer of X's mentor»).
+    # Им даём запас на короткие шаги; простым вопросам хватает 60.
+    multi = chain_len(q) >= 2
     # контекст уже собран харнессом - инструменты не нужны, хватает одного шага
-    return agent_answer(llm, system_prompt=SYSTEM, query=query, tools=[], strong=strong,
-                        max_tokens=60, max_iterations=1)
+    return agent_answer(llm, system_prompt=SYSTEM + (MULTI_HOP if multi else ""), query=query, tools=[],
+                        strong=strong, max_tokens=220 if multi else 60, max_iterations=1)

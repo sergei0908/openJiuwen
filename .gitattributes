@@ -1,2 +1,5 @@
 # Scripts run inside Linux containers and CI.
 *.sh text eol=lf
+
+# Hooks are shell scripts too.
+tools/hooks/* text eol=lf

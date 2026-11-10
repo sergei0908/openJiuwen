@@ -94,3 +94,34 @@ def test_context_includes_linked_entities(tmp_path, kb):
     assert "# Boris Novak" in ctx
     assert "# Fjord Data" in ctx
     assert "# Olga Petrov" not in ctx
+
+
+def test_chain_len():
+    from harness.solvers.search_solver import chain_len
+    assert chain_len("In which city is the headquarters of the employer of Rosa Ivanova's mentor?") == 2
+    assert chain_len("Where is the headquarters of Irina Smith's employer?") == 1
+    assert chain_len("In which year was Irina Smith born?") == 0
+
+
+def test_multi_hop_question_gets_room_to_finish():
+    # длинной цепочке нужен запас токенов, иначе ответ обрывается до «FINAL:»
+    from harness.solvers.base import Plan
+    from harness.solvers.search_solver import solve_llm
+
+    class FakeLLM:
+        def __init__(self):
+            self.kw = []
+
+        def agent(self, **kw):
+            self.kw.append(kw)
+            return "FINAL: Kazan"
+
+    llm = FakeLLM()
+    for q in ("In which city is the headquarters of the employer of Rosa Ivanova's mentor?",
+              "In which year was Irina Smith born?"):
+        p = Plan()
+        p.context, p.notes["question"] = "# Rosa Ivanova", q
+        assert solve_llm(None, llm, p) == "Kazan"
+    assert [k["max_tokens"] for k in llm.kw] == [220, 60]
+    assert "several links" in llm.kw[0]["system_prompt"]
+    assert "several links" not in llm.kw[1]["system_prompt"]

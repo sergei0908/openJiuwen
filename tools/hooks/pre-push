@@ -1,0 +1,21 @@
+#!/bin/sh
+# Rejects pushes that change protected branches from a local copy: develop changes only through PRs.
+# Without GitHub Pro a private repository cannot protect branches on the server, so this runs locally.
+# Install once per clone:   git config core.hooksPath tools/hooks
+# Emergency override (agreed by the whole team): ALLOW_PROTECTED_PUSH=1 git push ...
+protected="refs/heads/develop refs/heads/main"
+zero=0000000000000000000000000000000000000000
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  for p in $protected; do
+    [ "$remote_ref" = "$p" ] || continue
+    [ "${ALLOW_PROTECTED_PUSH:-0}" = 1 ] && continue
+    if [ "$local_sha" = "$zero" ]; then
+      echo "pre-push: deleting ${p#refs/heads/} is not allowed" >&2
+    else
+      echo "pre-push: push to ${p#refs/heads/} is not allowed, open a PR instead (CONTRIBUTING.md)" >&2
+    fi
+    status=1
+  done
+done
+exit $status

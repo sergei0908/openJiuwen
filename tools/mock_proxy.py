@@ -4,10 +4,12 @@
 харнесса (вызовы, учёт токенов, реакцию на исчерпание бюджета).
 
     python3 tools/mock_proxy.py --port 8765 --budget 5000 [--exhaust-mode reset]
+    python3 tools/mock_proxy.py --delay 5-10 --hang-calls 7 --hang-s 200   # медленный прокси
     LLM_BASE_URL=http://127.0.0.1:8765/v1 LLM_API_KEY=x python3 run_agent.py --tasks-dir ...
 """
 import argparse
 import json
+import random
 import re
 import socket
 import struct
@@ -17,7 +19,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOCK = threading.Lock()
 STATE = {"spent": 0.0, "budget": None, "calls": 0, "inflight": 0, "max_conc": None, "rejected": 0,
-         "exhaust_mode": "http429", "after_exhausted": 0}
+         "exhaust_mode": "http429", "after_exhausted": 0, "delay": (0.3, 0.3), "hang_calls": set(),
+         "hang_s": 200.0, "received": 0, "hung": 0}
+
+
+def parse_delay(text):
+    """«5» - ровно 5 с, «5-10» - случайно от 5 до 10 с."""
+    lo, _, hi = str(text).partition("-")
+    lo = float(lo)
+    hi = float(hi) if hi else lo
+    if lo < 0 or hi < lo:
+        raise argparse.ArgumentTypeError(f"bad delay: {text}")
+    return lo, hi
+
+
+def response_delay(n):
+    """Сколько ждать перед ответом на n-й полученный запрос: зависание или обычная задержка модели."""
+    if n in STATE["hang_calls"]:
+        STATE["hung"] += 1
+        return STATE["hang_s"]
+    lo, hi = STATE["delay"]
+    return random.uniform(lo, hi)
 
 
 def fake_answer(req):
@@ -85,8 +107,10 @@ class H(BaseHTTPRequestHandler):
                 self.wfile.write("Слишком много одновременных запросов с аккаунта".encode())
                 return
             STATE["inflight"] += 1
+            STATE["received"] += 1
+            wait = response_delay(STATE["received"])
         try:
-            time.sleep(0.3)  # имитация задержки модели
+            time.sleep(wait)  # задержка модели или зависание
             text, tool_calls = fake_answer(req)
         finally:
             with LOCK:
@@ -127,7 +151,7 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_GET(self):
-        raw = json.dumps(STATE).encode()
+        raw = json.dumps(STATE, default=sorted).encode()
         self.send_response(200)
         self.end_headers()
         self.wfile.write(raw)
@@ -140,7 +164,15 @@ if __name__ == "__main__":
     ap.add_argument("--max-concurrent", type=int, default=None)
     ap.add_argument("--exhaust-mode", default="http429",
                     choices=["http429", "silent429", "http402", "http500", "http403", "hang", "reset"])
+    ap.add_argument("--delay", type=parse_delay, default=(0.3, 0.3),
+                    help="задержка ответа в секундах: 5 или диапазон 5-10 (по умолчанию 0.3)")
+    ap.add_argument("--hang-calls", type=int, nargs="*", default=[],
+                    help="номера запросов (с 1), на которых прокси зависает на --hang-s секунд")
+    ap.add_argument("--hang-s", type=float, default=200.0)
     a = ap.parse_args()
+    STATE["delay"] = a.delay
+    STATE["hang_calls"] = set(a.hang_calls)
+    STATE["hang_s"] = a.hang_s
     STATE["budget"] = a.budget
     STATE["max_conc"] = a.max_concurrent
     STATE["exhaust_mode"] = a.exhaust_mode
