@@ -103,7 +103,11 @@ def write_file(path: Path, text: str):
 
 
 _WORD_NUM = {"one": 1, "two": 2, "three": 3, "four": 4}
+# Только просьба об ответе («Round to 2 decimal places», «answer with one decimal»), а не описание данных
+# («The price column has 2 decimal places»): иначе целый ответ 12 превратился бы в 12.00.
 DECIMALS_RE = re.compile(r"\b(\d|one|two|three|four)\s+decimals?\b", re.IGNORECASE)
+REQUEST_RE = re.compile(r"\b(?:round|rounded|rounding|answer|give|report|express|show|write|precision|accurate)\b",
+                        re.IGNORECASE)
 NUMBER_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)")
 
 
@@ -113,7 +117,8 @@ def match_decimals(instruction, answer):
     Проверка может сравнивать строки, а решатели и модель отбрасывают нули в конце. Значение числа не
     меняется (лишние знаки округляются по-школьному). Если в условии разное число знаков или ответ не
     одно число, ответ остаётся как есть."""
-    counts = {int(n) if n.isdigit() else _WORD_NUM[n.lower()] for n in DECIMALS_RE.findall(instruction or "")}
+    asks = [x for x in re.split(r"(?<=[.?!])\s+", instruction or "") if REQUEST_RE.search(x)]
+    counts = {int(n) if n.isdigit() else _WORD_NUM[n.lower()] for x in asks for n in DECIMALS_RE.findall(x)}
     if len(counts) != 1 or not NUMBER_RE.fullmatch(answer):
         return answer
     places = counts.pop()

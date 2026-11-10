@@ -28,6 +28,8 @@ def test_pads_to_requested_places(instruction, answer, expected):
     (ROUND2, "DONE"),
     ("Round prices to 2 decimal places and the total to 1 decimal place.", "12.5"),  # неоднозначно
     ("", "27.5"),
+    ("The price column has 2 decimal places. How many orders are there?", "12"),  # описание данных
+    ("Prices are stored with two decimals. What is the total number of units?", "158"),
 ])
 def test_leaves_other_answers_alone(instruction, answer):
     assert match_decimals(instruction, answer) == answer
