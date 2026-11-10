@@ -165,7 +165,10 @@ def read_rows(path):
             f.seek(0)
             counts = {d: head.count(d) for d in ",;\t|"}
             delim = max(counts, key=counts.get) if any(counts.values()) else ","
-            return list(csv.DictReader(f, delimiter=delim))
+            # «Product», «PRODUCT», « product» (пробел после запятой) - тот же столбец product; без этого
+            # фильтр по товару не находил столбца и задача объявлялась невыполнимой
+            return [{(k or "").strip().lower(): v.strip() if isinstance(v, str) else v for k, v in r.items()}
+                    for r in csv.DictReader(f, delimiter=delim)]
     except (OSError, UnicodeDecodeError, csv.Error):
         return None
 
