@@ -125,3 +125,51 @@ def test_multi_hop_question_gets_room_to_finish():
     assert [k["max_tokens"] for k in llm.kw] == [220, 60]
     assert "several links" in llm.kw[0]["system_prompt"]
     assert "several links" not in llm.kw[1]["system_prompt"]
+
+
+def _task(tmp_path, question):
+    from harness.tasks import Task
+    kb = tmp_path / "w" / "kb"
+    kb.mkdir(parents=True)
+    (kb / "rosa_sato.md").write_text("# Rosa Sato\n\nBorn: 1984\nEmployer: Arktika Labs\nMentor: Hiro Petrov\n")
+    (kb / "hiro_petrov.md").write_text("# Hiro Petrov\n\nBorn: 1961\nEmployer: Volga Data\n")
+    (kb / "arktika_labs.md").write_text("# Arktika Labs\n\nHeadquarters: Murmansk\n")
+    (kb / "volga_data.md").write_text("# Volga Data\n\nHeadquarters: Kazan\n")
+    instr = "The directory kb/ contains a small knowledge base of markdown files. " + question + \
+        " Work only inside the current directory."
+    return Task("search_x", tmp_path / "w", "search", instr, 1.0)
+
+
+def test_question_relying_on_previous_sentence_is_not_infeasible(tmp_path):
+    from harness.solvers.search_solver import analyze
+    p = analyze(_task(tmp_path, "Rosa Sato works for a firm. In which city is that firm based?"))
+    assert p.feasible is not False
+    assert "Rosa Sato works for a firm" in p.notes["task_text"]   # агент видит всё условие
+    assert "Arktika Labs" in p.context
+
+
+def test_question_without_names_gets_whole_kb(tmp_path):
+    from harness.solvers.search_solver import analyze
+    p = analyze(_task(tmp_path, "How many people in the knowledge base work for companies based in Kazan?"))
+    assert p.feasible is not False
+    assert "Volga Data" in p.context and "Rosa Sato" in p.context
+
+
+def test_reference_to_that_person_is_not_infeasible(tmp_path):
+    from harness.solvers.search_solver import analyze
+    p = analyze(_task(tmp_path, "Hiro Petrov mentors exactly one person. Which company employs that person?"))
+    assert p.feasible is not False
+
+
+def test_unknown_name_is_still_infeasible(tmp_path):
+    from harness.solvers.search_solver import analyze
+    p = analyze(_task(tmp_path, "In which year was Victor Kraus born?"))
+    assert p.feasible is False
+
+
+def test_reverse_links_are_in_context(tmp_path):
+    # «Who works at Volga Data?» - ответ в файле человека, а не компании
+    from harness.solvers.search_solver import analyze
+    p = analyze(_task(tmp_path, "Who works at Volga Data?"))
+    assert p.feasible is not False
+    assert "Hiro Petrov" in p.context
