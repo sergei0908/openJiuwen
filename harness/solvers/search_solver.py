@@ -181,7 +181,15 @@ def unknown_names(text, ents):
 
 
 def gather_context(question, ents, files, hops=2):
-    seen, frontier = [], mentioned(question, ents)
+    start = mentioned(question, ents)
+    # обратные связи: «Who works at Polar Bit?» - нужны люди, у которых Employer: Polar Bit
+    # (только для вопросов «кто…» / «сколько людей…», иначе контекст разрастается зря)
+    back = []
+    if re.search(r"\b(?:who|whom|which (?:people|person|employees?)|how many (?:people|persons|employees))\b",
+                 question, re.IGNORECASE):
+        back = [k for k, e in ents.items() if k not in start
+                and any(v.lower() in start for v in e["fields"].values())]
+    seen, frontier = [], start + back
     for _ in range(hops + 1):
         nxt = []
         for k in frontier:

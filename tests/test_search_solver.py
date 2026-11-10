@@ -134,3 +134,11 @@ def test_unknown_name_is_still_infeasible(tmp_path):
     from harness.solvers.search_solver import analyze
     p = analyze(_task(tmp_path, "In which year was Victor Kraus born?"))
     assert p.feasible is False
+
+
+def test_reverse_links_are_in_context(tmp_path):
+    # «Who works at Volga Data?» - ответ в файле человека, а не компании
+    from harness.solvers.search_solver import analyze
+    p = analyze(_task(tmp_path, "Who works at Volga Data?"))
+    assert p.feasible is not False
+    assert "Hiro Petrov" in p.context
