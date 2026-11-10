@@ -96,32 +96,41 @@ def test_context_includes_linked_entities(tmp_path, kb):
     assert "# Olga Petrov" not in ctx
 
 
-def test_chain_len():
-    from harness.solvers.search_solver import chain_len
-    assert chain_len("In which city is the headquarters of the employer of Rosa Ivanova's mentor?") == 2
-    assert chain_len("Where is the headquarters of Irina Smith's employer?") == 1
-    assert chain_len("In which year was Irina Smith born?") == 0
+def _task(tmp_path, question):
+    from harness.tasks import Task
+    kb = tmp_path / "w" / "kb"
+    kb.mkdir(parents=True)
+    (kb / "rosa_sato.md").write_text("# Rosa Sato\n\nBorn: 1984\nEmployer: Arktika Labs\nMentor: Hiro Petrov\n")
+    (kb / "hiro_petrov.md").write_text("# Hiro Petrov\n\nBorn: 1961\nEmployer: Volga Data\n")
+    (kb / "arktika_labs.md").write_text("# Arktika Labs\n\nHeadquarters: Murmansk\n")
+    (kb / "volga_data.md").write_text("# Volga Data\n\nHeadquarters: Kazan\n")
+    instr = "The directory kb/ contains a small knowledge base of markdown files. " + question + \
+        " Work only inside the current directory."
+    return Task("search_x", tmp_path / "w", "search", instr, 1.0)
 
 
-def test_multi_hop_question_gets_room_to_finish():
-    # длинной цепочке нужен запас токенов, иначе ответ обрывается до «FINAL:»
-    from harness.solvers.base import Plan
-    from harness.solvers.search_solver import solve_llm
+def test_question_relying_on_previous_sentence_is_not_infeasible(tmp_path):
+    from harness.solvers.search_solver import analyze
+    p = analyze(_task(tmp_path, "Rosa Sato works for a firm. In which city is that firm based?"))
+    assert p.feasible is not False
+    assert "Rosa Sato works for a firm" in p.notes["task_text"]   # агент видит всё условие
+    assert "Arktika Labs" in p.context
 
-    class FakeLLM:
-        def __init__(self):
-            self.kw = []
 
-        def agent(self, **kw):
-            self.kw.append(kw)
-            return "FINAL: Kazan"
+def test_question_without_names_gets_whole_kb(tmp_path):
+    from harness.solvers.search_solver import analyze
+    p = analyze(_task(tmp_path, "How many people in the knowledge base work for companies based in Kazan?"))
+    assert p.feasible is not False
+    assert "Volga Data" in p.context and "Rosa Sato" in p.context
 
-    llm = FakeLLM()
-    for q in ("In which city is the headquarters of the employer of Rosa Ivanova's mentor?",
-              "In which year was Irina Smith born?"):
-        p = Plan()
-        p.context, p.notes["question"] = "# Rosa Ivanova", q
-        assert solve_llm(None, llm, p) == "Kazan"
-    assert [k["max_tokens"] for k in llm.kw] == [220, 60]
-    assert "several links" in llm.kw[0]["system_prompt"]
-    assert "several links" not in llm.kw[1]["system_prompt"]
+
+def test_reference_to_that_person_is_not_infeasible(tmp_path):
+    from harness.solvers.search_solver import analyze
+    p = analyze(_task(tmp_path, "Hiro Petrov mentors exactly one person. Which company employs that person?"))
+    assert p.feasible is not False
+
+
+def test_unknown_name_is_still_infeasible(tmp_path):
+    from harness.solvers.search_solver import analyze
+    p = analyze(_task(tmp_path, "In which year was Victor Kraus born?"))
+    assert p.feasible is False

@@ -13,6 +13,7 @@ from .base import (
     agent_answer,
     approx_tokens,
     extract_question,
+    strip_boilerplate,
 )
 
 REL = {"employer": "employer", "company": "employer", "mentor": "mentor",
@@ -155,6 +156,30 @@ def mentioned(question, ents):
     return [h for h in hits if not any(h != o and h in o for o in hits)]
 
 
+NAME_RE = re.compile(r"\b([A-Z][a-z]+(?:[ -][A-Z][a-z]+)+)\b")
+NOT_NAMES = {"in", "the", "which", "what", "who", "where", "when", "how", "use", "is", "does", "did", "a", "an"}
+KB_INTRO = re.compile(r"(?:The directory \S+ contains[^.]*\.|The file \S+ contains[^.]*\.|Use the file tools[^.]*\.)",
+                      re.IGNORECASE)
+
+
+def task_text(instruction):
+    """Условие целиком, без вступления про базу и общего хвоста: вопрос может опираться на соседние
+    предложения («Rosa Sato works for a firm. In which city is that firm based?»)."""
+    return KB_INTRO.sub("", strip_boilerplate(instruction)).strip()
+
+
+def unknown_names(text, ents):
+    """Имена собственные из текста, которых нет в базе («Victor Kraus», когда в базе Viktor Krasnov)."""
+    out = []
+    for m in NAME_RE.finditer(text):
+        words = m.group(1).split()
+        while words and words[0].lower() in NOT_NAMES:
+            words = words[1:]
+        if len(words) >= 2 and " ".join(words).lower() not in ents:
+            out.append(" ".join(words))
+    return out
+
+
 def gather_context(question, ents, files, hops=2):
     seen, frontier = [], mentioned(question, ents)
     for _ in range(hops + 1):
@@ -174,7 +199,9 @@ def analyze(task, fast_path=True):
     p = Plan()
     ents, files = load_kb(task.workspace, task.instruction)
     q = extract_question(task.instruction)
+    full = task_text(task.instruction)
     p.notes["question"] = q
+    p.notes["task_text"] = full
     if ents is None:
         p.est_cost = 1500
         p.p_success = 0.5
@@ -182,16 +209,22 @@ def analyze(task, fast_path=True):
         return p
     if fast_path:
         a = fast_solve(q, ents)
+        if a == "IMPOSSIBLE" and not mentioned(q, ents) and mentioned(full, ents):
+            a = None  # вопрос ссылается на соседнее предложение («that person») - разбор его не понял
         if a == "IMPOSSIBLE":
             p.feasible = False
             return p
         if a is not None:
             p.fast_answer = a
             return p
-    if not mentioned(q, ents):
-        p.feasible = False  # ни одна сущность из вопроса не найдена в базе
-        return p
-    p.context = gather_context(q, ents, files)
+    if not mentioned(full, ents):
+        if unknown_names(full, ents):
+            p.feasible = False  # в условии названо имя, которого в базе нет
+            return p
+        # никого не назвали («сколько людей работает в компаниях из Казани?») - нужна вся база
+        p.context = "\n\n".join(files.values())[:8000]
+    else:
+        p.context = gather_context(full, ents, files)
     p.est_cost = (approx_tokens(p.context) + 120) * 0.1 + 25
     p.p_success = 0.85
     return p
@@ -216,7 +249,7 @@ def solve_llm(task, llm, plan, strong=False):
         from .generic import solve_generic
         return solve_generic(task, llm, plan)
     q = plan.notes["question"]
-    query = f"Knowledge base excerpt:\n{plan.context}\n\nQuestion: {q}"
+    query = f"Knowledge base excerpt:\n{plan.context}\n\nQuestion: {plan.notes.get('task_text') or q}"
     # Длинные цепочки модель любит расписывать по шагам и при 60 токенах обрывается до «FINAL:»
     # (замер 9.11: все 17 ошибок на 120 задачах - вопросы «headquarters of the employer of X's mentor»).
     # Им даём запас на короткие шаги; простым вопросам хватает 60.
