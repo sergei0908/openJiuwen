@@ -321,6 +321,14 @@ def _pair_search(src0, tree, cands, applied, ws, module, tests, cur_pass, deadli
     return None
 
 
+def driver_env():
+    """Окружение для запуска кода задачи: без ключа прокси, как в песочнице агента (sandbox._ENV).
+    Код задачи и тесты ключ не используют, а держать его в окружении чужого кода незачем."""
+    env = {k: v for k, v in os.environ.items() if k != "LLM_API_KEY"}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
+
+
 def _evaluate(ws, module, tests, sources, timeout, deadline=None):
     fd, cfgp = tempfile.mkstemp(suffix=".json", dir=os.environ.get("TMPDIR", "/tmp"))
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -328,7 +336,7 @@ def _evaluate(ws, module, tests, sources, timeout, deadline=None):
                    "sources": sources, "per_case_timeout": 2.0, "deadline": deadline}, f)
     try:
         p = subprocess.run([sys.executable, "-I", DRIVER, cfgp], capture_output=True, text=True, check=False,
-                           timeout=timeout, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+                           timeout=timeout, env=driver_env())
         return json.loads(p.stdout)
     except Exception:  # noqa: BLE001
         return None
