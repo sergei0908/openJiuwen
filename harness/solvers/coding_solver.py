@@ -43,15 +43,15 @@ def _unittest_style(tests):
 
 
 def test_cmd(task, tests):
-    """Команда тестов. Если тесты в корне и на unittest - как в условии или `python -m unittest`.
-    Тесты в подпапке или в стиле pytest - наш запускатель harness/testrun.py (pytest в контейнере нет):
-    иначе `python test_x.py` с функциями-тестами «проходит», ничего не проверив."""
+    """Команда тестов: всегда наша, а не из условия. Тесты в корне и на unittest - `python -m unittest`
+    по всем тестовым файлам. Тесты в подпапке или в стиле pytest - наш запускатель harness/testrun.py
+    (pytest в контейнере нет): иначе `python test_x.py` с функциями-тестами «проходит», ничего не проверив.
+
+    Команду из условия не берём: если команд две, первая запускает не все тесты (DONE без починки),
+    а `pytest` в условии падает всегда - модуля нет в образе."""
     ws = task.workspace
     flat = all(t.parent == ws for t in tests)
-    if flat and _unittest_style(tests):
-        m = re.search(r"`(python3? [^`]+)`", task.instruction)
-        if m:
-            return m.group(1).split()
+    if flat and _unittest_style(tests) and all(t.stem.isidentifier() for t in tests):
         return ["python3", "-m", "unittest", "-q"] + [t.stem for t in tests]
     return ["python3", RUNNER] + [str(t.relative_to(ws)) for t in tests]
 
@@ -68,28 +68,59 @@ def can_fix(ws, targets):
     return can_write(ws) or all(os.access(t, os.W_OK) for t in targets)
 
 
+def _module_names(tree):
+    """Имена, под которыми тест видит модули и функции из импортов (`import mylib as m`, `from mylib import f`)."""
+    mods, funcs = set(), set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            mods.update((a.asname or a.name).split(".")[0] for a in n.names)
+        elif isinstance(n, ast.ImportFrom):
+            funcs.update(a.asname or a.name for a in n.names)
+    return mods, funcs
+
+
+def _pure_call(node, mods, funcs):
+    """Вызов функции модуля с константными аргументами: m.f(1, [2, 3]) или f('a').
+    Методы объектов (s.pop(), counter.next()) сюда не попадают: у объекта есть состояние, и один и тот же
+    вызов законно возвращает разное."""
+    f = node.func
+    if isinstance(f, ast.Attribute):
+        if not (isinstance(f.value, ast.Name) and f.value.id in mods):
+            return False
+    elif not (isinstance(f, ast.Name) and f.id in funcs):
+        return False
+    try:
+        for a in [*node.args, *(k.value for k in node.keywords)]:
+            ast.literal_eval(a)
+    except ValueError:
+        return False
+    return True
+
+
 def contradictory_tests(tests):
-    """Одинаковый вызов с разными ожидаемыми значениями в assertEqual -> починить нельзя."""
+    """Одинаковый вызов функции модуля с разными ожидаемыми константами в assertEqual -> починить нельзя.
+
+    Только «уверен или молчит»: вызовы методов объектов и вызовы с переменными в аргументах не
+    сравниваем - стек, счётчик или генератор законно отвечают по-разному на один и тот же вызов."""
     seen = {}
     for t in tests:
         try:
             tree = ast.parse(t.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
+        mods, funcs = _module_names(tree)
         for n in ast.walk(tree):
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
                     and n.func.attr in ("assertEqual", "assertEquals") and len(n.args) == 2:
                 a, b = n.args
                 if isinstance(b, ast.Call) and not isinstance(a, ast.Call):
                     a, b = b, a
-                if not isinstance(a, ast.Call):
+                if not isinstance(a, ast.Call) or not isinstance(b, ast.Constant) or not _pure_call(a, mods, funcs):
                     continue
-                key, val = ast.dump(a), ast.dump(b)
-                if key in seen and seen[key] != val and isinstance(b, ast.Constant) \
-                        and isinstance(seen.get(key + "#node"), ast.Constant):
+                key = ast.dump(a)
+                if key in seen and seen[key] != b.value:
                     return True
-                seen.setdefault(key, val)
-                seen.setdefault(key + "#node", b)
+                seen.setdefault(key, b.value)
     return False
 
 
