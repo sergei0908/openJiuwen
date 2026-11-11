@@ -77,3 +77,18 @@ def test_large_file_is_repaired_quickly(tmp_path):
     assert fixed is not None and "sum(xs) + 1" not in fixed   # починка найдена (любая из верных)
     assert info["mutants"] < 50          # без отбора - больше тысячи вариантов
     assert time.time() - t < 15
+
+
+def test_task_code_does_not_see_the_api_key(tmp_path, monkeypatch):
+    # перебор запускает код задачи: ключа прокси в его окружении быть не должно (как в песочнице агента)
+    monkeypatch.setenv("LLM_API_KEY", "secret-key")
+    env = apr.driver_env()
+    assert "LLM_API_KEY" not in env and env["PYTHONDONTWRITEBYTECODE"] == "1"
+    (tmp_path / "mylib.py").write_text("import os\n\n\ndef key():\n    return os.environ.get('LLM_API_KEY', 'none') + 'x'\n")
+    (tmp_path / "test_mylib.py").write_text(
+        "import unittest\n\nimport mylib as m\n\n\nclass T(unittest.TestCase):\n"
+        "    def test_key(self):\n        self.assertEqual(m.key(), 'none')\n\n\n"
+        "if __name__ == '__main__':\n    unittest.main()\n")
+    fixed, _, _ = apr.repair(tmp_path, tmp_path / "mylib.py", [tmp_path / "test_mylib.py"])
+    # если бы код задачи видел ключ, вызов вернул бы 'secret-keyx'; без ключа - 'nonex', и перебор чинит «+ 'x'»
+    assert fixed is not None and "secret" not in fixed
