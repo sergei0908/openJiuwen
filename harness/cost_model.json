@@ -31,7 +31,8 @@
    },
    "log": true,
    "lambda": 0.1,
-   "scale": 1.045
+   "scale": 1.045,
+   "floor": 105.0
   },
   "data_analysis": {
    "kind": "linear",
@@ -66,7 +67,8 @@
    },
    "log": false,
    "lambda": 0.1,
-   "scale": 1.012
+   "scale": 1.012,
+   "floor": 115.0
   },
   "math": {
    "kind": "linear",
@@ -95,7 +97,8 @@
    },
    "log": false,
    "lambda": 10.0,
-   "scale": 1.217
+   "scale": 1.217,
+   "floor": 83.0
   },
   "search": {
    "kind": "loglin",
@@ -126,8 +129,10 @@
    },
    "log": true,
    "lambda": 0.1,
-   "scale": 1.09
+   "scale": 1.09,
+   "floor": 22.0
   }
  },
- "scale_note": "scale: медиана факт/прогноз по трассам develop_16 (final_16 seed 501-508 + рабочий набор Маши), 11.11"
+ "scale_note": "scale: медиана факт/прогноз по трассам develop_16 (final_16 seed 501-508 + рабочий набор Маши), 11.11",
+ "floor_note": "floor: 5-й процентиль цены первого вызова по трассам develop_16 (seed 501-508 + рабочий набор Маши), 11.11"
 }
