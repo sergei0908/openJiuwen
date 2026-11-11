@@ -30,29 +30,37 @@ def _pct(sign):
 # Каждое правило: регэксп предложения целиком -> функция (stock, *ints) -> stock
 RULES = [
     (rf"(?:A|The) \w+ starts with {N} (?P<unit>\w+)", lambda s, a: a),
-    (rf"It ships {N} \w+ per day for {N} days?", lambda s, a, b: s - a * b),
-    (rf"It ships {N} \w+", lambda s, a: s - a),
-    (rf"It (?:receives|gets) {N} deliveries of {N} \w+ each", lambda s, a, b: s + a * b),
-    (rf"It (?:receives|gets) {N} \w+", lambda s, a: s + a),
-    (rf"It (?:loses|sells|gives away) {N} \w+", lambda s, a: s - a),
+    (rf"It ships {N} (?P<g>\w+) per day for {N} days?", lambda s, a, b: s - a * b),
+    (rf"It ships {N} (?P<g>\w+)", lambda s, a: s - a),
+    (rf"It (?:receives|gets) {N} deliveries of {N} (?P<g>\w+) each", lambda s, a, b: s + a * b),
+    (rf"It (?:receives|gets) {N} (?P<g>\w+)", lambda s, a: s + a),
+    (rf"It (?:loses|sells|gives away) {N} (?P<g>\w+)", lambda s, a: s - a),
     (rf"(?:Then )?the stock is split equally into {N} \w+ and it keeps one share \(rounded down\)",
      lambda s, k: s // k),
     (r"(?:Then )?the stock is doubled(?: by merging with a sister \w+)?", lambda s: s * 2),
     (r"(?:Then )?the stock is tripled(?: by merging with two sister \w+)?", lambda s: s * 3),
-    (rf"(?:Then )?a customer buys {N} \w+(?: from it)?", lambda s, a: s - a),
+    (rf"(?:Then )?a customer buys {N} (?P<g>\w+)(?: from it)?", lambda s, a: s - a),
     (r"(?:Then )?its stock grows threefold(?: after an acquisition)?", lambda s: s * 3),
     (r"(?:Then )?its stock grows twofold(?: after an acquisition)?", lambda s: s * 2),
-    (rf"(?:Then )?{N}% of (?:the|its) (?:stock|\w+) (?:is|are|gets|get) {PCT_DOWN}{ROUND}", _pct(-1)),
+    (rf"(?:Then )?{N}% of (?:the|its) (?:stock|(?P<g>\w+)) (?:is|are|gets|get) {PCT_DOWN}{ROUND}", _pct(-1)),
     (rf"(?:Then )?(?:the|its) stock {PCT_UP} by {N}%{ROUND}", _pct(+1)),
 ]
 # Лишние сведения без действия над запасом: «The warehouse has 12 employees», «It was built 7 years ago».
-# Пропускаем предложение, только если в нём нет ни слова о запасе (единицы, stock) и ни одного действия.
-FILLER = re.compile(r"(?:The|Its|It)\b[\w ]* (?:has|have|had|was|were|is|are|employs|opened|built|worked)\b[\w ]*",
-                    re.IGNORECASE)
+# Пропускаем предложение, только если глагол из короткого списка безопасных (has, employs, was built…),
+# в нём нет ни слова о запасе (единицы, stock) и ни одного действия. «is reduced by 40», «was halved» -
+# это действие, просто незнакомое: такое предложение отдаём агенту, а не пропускаем.
+FILLER = re.compile(r"(?:The|Its|It)\b[\w ]* (?:has|have|had|employs|employ|opened|was built|were built|"
+                    r"was founded|worked)\b[\w ]*", re.IGNORECASE)
 ACTION = re.compile(r"\b(?:ship|send|sent|sell|sold|buy|bought|receiv|get|got|deliver|lose|lost|los|give|gave|add|remov|"
                     r"take|took|damag|spoil|steal|stole|split|doubl|tripl|grow|increas|decreas|drop|keep|kept|"
                     r"return|order|move|transfer|donat|throw|thrown|discard|destroy|use|left|remain|stock|"
                     r"share|half|twice|times|fold|per|each|%)", re.IGNORECASE)
+
+
+def same_unit(a, b):
+    """«box» и «boxes», «crate» и «crates» - одна единица."""
+    a, b = a.lower(), b.lower()
+    return a == b or a in (b + "s", b + "es") or b in (a + "s", a + "es")
 
 
 def is_filler(sent, unit):
@@ -92,6 +100,9 @@ def fast_solve(instr):
             mm = re.fullmatch(pat, sent, flags=re.IGNORECASE)
             if mm:
                 kw = {k: v for k, v in mm.groupdict().items() if v is not None}
+                goods = kw.pop("g", None)
+                if goods and not same_unit(goods, unit):
+                    return None  # «It loses 2 employees», «It receives 3 complaints» - не о товаре
                 nums = [int(v) for k, v in zip(_group_names(mm), mm.groups(), strict=True) if k is None]
                 try:
                     stock = fn(stock, *nums, **kw)
