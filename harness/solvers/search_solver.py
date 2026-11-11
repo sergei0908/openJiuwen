@@ -180,7 +180,7 @@ def fast_solve(question, ents):
             return ent["name"]
         val = get_field(ent, attr)
         if val:
-            return field_answer(attr, val)
+            return field_answer(attr, val, question)
         # файла связанной сущности нет в базе - узнать её поля неоткуда
         return "IMPOSSIBLE" if status == "dangling" else None
     return None
@@ -189,12 +189,15 @@ def fast_solve(question, ents):
 YEAR = re.compile(r"\b(1[0-9]{3}|20[0-9]{2})\b")
 
 
-def field_answer(attr, val):
-    """Ответ из значения поля. Год - из полной даты («12 March 1984» -> 1984); город и страну вместе
-    («Osaka, Japan») отдаём модели: какая часть нужна, решает вопрос."""
+def field_answer(attr, val, question=""):
+    """Ответ из значения поля. Год из полной даты («12 March 1984» -> 1984) - только если спрашивают
+    год: на «When was X born?» эталон может быть полной датой, такое решает модель. Город и страну
+    вместе («Osaka, Japan») тоже отдаём модели: какая часть нужна, решает вопрос."""
     if attr in ("born", "founded"):
+        if YEAR.fullmatch(val.strip()):
+            return val.strip()
         years = YEAR.findall(val)
-        return years[0] if len(years) == 1 else None
+        return years[0] if len(years) == 1 and "year" in question.lower() else None
     if attr == "headquarters" and "," in val:
         return None
     return val

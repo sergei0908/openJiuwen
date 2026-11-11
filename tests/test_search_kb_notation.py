@@ -72,7 +72,9 @@ def test_field_named_like_the_relation_wins_over_synonym(tmp_path):
 
 
 def test_full_date_gives_year_and_city_country_goes_to_model():
-    assert field_answer("born", "12 March 1984") == "1984"
+    assert field_answer("born", "12 March 1984", "In which year was X born?") == "1984"
+    assert field_answer("born", "12 March 1984", "When was X born?") is None   # эталон может быть датой
+    assert field_answer("born", "12 March 1984") is None
     assert field_answer("born", "1984") == "1984"
     assert field_answer("born", "between 1984 and 1986") is None
     assert field_answer("headquarters", "Osaka, Japan") is None
