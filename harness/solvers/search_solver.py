@@ -59,9 +59,17 @@ def kb_files(ws: Path, instruction=""):
     return listed(ws)
 
 
+# «Born: 1984», «- Born: 1984», «* Born: 1984», «**Born:** 1984», «**Born**: 1984»
+FIELD_RE = re.compile(r"^\s*(?:[-*•]\s+)?(?:\*\*|__)?([A-Za-z][A-Za-z _-]*?)(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(.+?)\s*$",
+                      re.MULTILINE)
+# «Arktika Labs, Inc.» - в вопросах и в полях других сущностей обычно просто «Arktika Labs»
+CORP_SUFFIX = re.compile(r",?\s+(?:Inc|Ltd|LLC|Corp|Co|GmbH|PLC|AG|S\.A)\.?$", re.IGNORECASE)
+
+
 def load_kb(ws: Path, instruction=""):
-    """Сущности базы: заголовок «# Имя» и поля «Ключ: значение». В одном файле может быть много
-    сущностей подряд - делим по заголовкам первого уровня."""
+    """Сущности базы: заголовок «# Имя» и поля «Ключ: значение» (в том числе пунктом списка и жирным).
+    В одном файле может быть много сущностей подряд - делим по заголовкам первого уровня. Факты,
+    записанные предложениями, полями не станут - такие вопросы решает модель по файлу сущности."""
     ents, files = {}, {}
     for f in kb_files(ws, instruction):
         txt = f.read_text(encoding="utf-8", errors="replace")
@@ -71,13 +79,37 @@ def load_kb(ws: Path, instruction=""):
                 continue
             name = m.group(1).strip()
             fields = {}
-            for k, v in re.findall(r"^([A-Za-z _-]+):\s*(.+?)\s*$", part, re.MULTILINE):
-                fields[k.strip().lower()] = v.strip()
-            ents[name.lower()] = {"name": name, "fields": fields}
+            for k, v in FIELD_RE.findall(part):
+                fields[k.strip().lower()] = v.strip().strip("*_").strip()
+            ent = {"name": name, "fields": fields}
+            ents[name.lower()] = ent
             files[name.lower()] = part.strip()
+            alias = CORP_SUFFIX.sub("", name).strip()
+            if alias and alias != name and alias.lower() not in ents:
+                ents[alias.lower()] = ent
+                files[alias.lower()] = part.strip()
     if not ents:
         return None, {}  # базу не нашли или не поняли - универсальный путь, а не «невыполнимо»
     return ents, files
+
+
+# Одно поле может называться по-разному: «HQ», «Established», «Birth year».
+FIELD_SYN = {
+    "born": ("born", "birth year", "year of birth", "date of birth", "birth date", "birthday"),
+    "founded": ("founded", "established", "year founded", "founding year", "founded in"),
+    "headquarters": ("headquarters", "hq", "head office", "headquartered in", "based in"),
+    "employer": ("employer", "works at", "works for", "employed by", "company"),
+    "mentor": ("mentor", "mentored by", "advisor", "adviser"),
+}
+
+
+def get_field(ent, key):
+    """Значение поля по его имени или синониму; None, если такого поля у сущности нет."""
+    for k in FIELD_SYN.get(key, (key,)):
+        v = ent["fields"].get(k)
+        if v:
+            return v
+    return None
 
 
 OF_CHAIN = re.compile(r"^(?:the\s+)?(?P<rel>\w+)\s+of\s+(?P<rest>.+)$", re.IGNORECASE)
@@ -109,10 +141,11 @@ def resolve_subject(s, ents):
         return None, "missing:" + base
     for rel in parts[1:]:
         rel = rel.strip().lower()
-        key = REL.get(rel)
+        # поле с таким именем есть («Boss: …») - берём его, а не синоним (boss -> mentor)
+        key = rel if rel in cur["fields"] else REL.get(rel)
         if key is None:
             return None, "unknown_rel:" + rel
-        val = cur["fields"].get(key)
+        val = cur["fields"].get(key) or get_field(cur, key)
         if not val:
             return None, "missing_field:" + key
         nxt = ents.get(val.lower())
@@ -133,20 +166,41 @@ def fast_solve(question, ents):
             if status.startswith("missing:") and mentioned(question, ents):
                 # кто-то из базы в вопросе есть - значит, мы не поняли формулировку, а не данных нет
                 return None
-            if status.startswith(("missing:", "missing_field")):
-                return "IMPOSSIBLE"
+            if status.startswith("missing:"):
+                return "IMPOSSIBLE"  # самого человека или компании в базе нет
+            if status.startswith("missing_field"):
+                # сущность есть, а поля под знакомым именем нет - факт может быть записан иначе
+                # («was born in 1984»); решает модель по файлу сущности, а не «невыполнимо»
+                return None
             continue
         if attr == "":
             # «Who is X's mentor?» - ответ = имя; «Who is X?» без связи - не наш случай
             if "'" not in m.group("s") and "’" not in m.group("s"):
                 continue
             return ent["name"]
-        val = ent["fields"].get(attr)
+        val = get_field(ent, attr)
         if val:
-            return val
-        # поле нужно, а его нет: у сущности нет поля или файла связанной сущности нет в базе
-        return "IMPOSSIBLE" if status in ("ok", "dangling") else None
+            return field_answer(attr, val, question)
+        # файла связанной сущности нет в базе - узнать её поля неоткуда
+        return "IMPOSSIBLE" if status == "dangling" else None
     return None
+
+
+YEAR = re.compile(r"\b(1[0-9]{3}|20[0-9]{2})\b")
+
+
+def field_answer(attr, val, question=""):
+    """Ответ из значения поля. Год из полной даты («12 March 1984» -> 1984) - только если спрашивают
+    год: на «When was X born?» эталон может быть полной датой, такое решает модель. Город и страну
+    вместе («Osaka, Japan») тоже отдаём модели: какая часть нужна, решает вопрос."""
+    if attr in ("born", "founded"):
+        if YEAR.fullmatch(val.strip()):
+            return val.strip()
+        years = YEAR.findall(val)
+        return years[0] if len(years) == 1 and "year" in question.lower() else None
+    if attr == "headquarters" and "," in val:
+        return None
+    return val
 
 
 def mentioned(question, ents):
@@ -169,13 +223,17 @@ def task_text(instruction):
 
 
 def unknown_names(text, ents):
-    """Имена собственные из текста, которых нет в базе («Victor Kraus», когда в базе Viktor Krasnov)."""
+    """Имена собственные из текста, которых нет в базе («Victor Kraus», когда в базе Viktor Krasnov).
+    Известным считается и то, что встречается в значениях полей: город «New York» - не неизвестный
+    человек, а место из базы."""
+    values = [v.lower() for e in ents.values() for v in e["fields"].values()]
     out = []
     for m in NAME_RE.finditer(text):
         words = m.group(1).split()
         while words and words[0].lower() in NOT_NAMES:
             words = words[1:]
-        if len(words) >= 2 and " ".join(words).lower() not in ents:
+        name = " ".join(words).lower()
+        if len(words) >= 2 and name not in ents and not any(name in v for v in values):
             out.append(" ".join(words))
     return out
 
@@ -200,7 +258,7 @@ def gather_context(question, ents, files, hops=2):
                 if v.lower() in ents and v.lower() not in seen:
                     nxt.append(v.lower())
         frontier = nxt
-    return "\n\n".join(files[k] for k in seen)
+    return "\n\n".join(dict.fromkeys(files[k] for k in seen))  # у компании может быть два ключа (с «Inc.»)
 
 
 def analyze(task, fast_path=True):
@@ -230,7 +288,7 @@ def analyze(task, fast_path=True):
             p.feasible = False  # в условии названо имя, которого в базе нет
             return p
         # никого не назвали («сколько людей работает в компаниях из Казани?») - нужна вся база
-        p.context = "\n\n".join(files.values())[:8000]
+        p.context = "\n\n".join(dict.fromkeys(files.values()))[:8000]
     else:
         p.context = gather_context(full, ents, files)
     p.est_cost = (approx_tokens(p.context) + 120) * 0.1 + 25
