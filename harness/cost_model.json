@@ -30,7 +30,8 @@
     "coding_tests": 7.287037037037037
    },
    "log": true,
-   "lambda": 0.1
+   "lambda": 0.1,
+   "scale": 1.045
   },
   "data_analysis": {
    "kind": "linear",
@@ -64,7 +65,8 @@
     "instr_chars": 373.5221238938053
    },
    "log": false,
-   "lambda": 0.1
+   "lambda": 0.1,
+   "scale": 1.012
   },
   "math": {
    "kind": "linear",
@@ -92,7 +94,8 @@
     "math_sentences": 7.878260869565217
    },
    "log": false,
-   "lambda": 10.0
+   "lambda": 10.0,
+   "scale": 1.217
   },
   "search": {
    "kind": "loglin",
@@ -122,7 +125,9 @@
     "search_hops": 1.8
    },
    "log": true,
-   "lambda": 0.1
+   "lambda": 0.1,
+   "scale": 1.09
   }
- }
+ },
+ "scale_note": "scale: медиана факт/прогноз по трассам develop_16 (final_16 seed 501-508 + рабочий набор Маши), 11.11"
 }
