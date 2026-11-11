@@ -106,9 +106,11 @@ def agent_answer(llm, *, system_prompt, query, tools, strong=False, max_tokens=6
         if not FINAL_RE.search(text or ""):
             return None
         ans = clean_answer(final_answer(text))
-    return None if is_unsolvable(ans) or not ans else ans
+    return None if is_unsolvable(ans) or not ans or AGENT_GAVE_UP.search(ans) else ans
 
 
+# Служебная строка openJiuwen, когда агент исчерпал итерации: это не ответ (maria_27).
+AGENT_GAVE_UP = re.compile(r"max(?:imum)? iterations? reached|without completion", re.IGNORECASE)
 RETRY_FINAL = "\n\nReply with exactly one line 'FINAL: <answer>' and nothing else. No reasoning."
 LIST_MARK = re.compile(r"^(?:\d+[.)]|[-*•#>])\s")
 

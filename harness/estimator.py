@@ -44,6 +44,7 @@ def linear_predict(m, feats):
         y += w * float(v)
     if m.get("log"):
         y = math.exp(min(y, 12.0))
+    y *= m.get("scale", 1.0)  # поправка на сдвиг цен после смены промптов (медиана факт/прогноз)
     lo, hi = m.get("clip", (MIN_COST, None))
     y = max(lo or MIN_COST, y)
     return min(hi, y) if hi else y

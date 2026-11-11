@@ -116,14 +116,17 @@ def match_decimals(instruction, answer):
 
     Нули в конце не дописываем и убираем: 25.4 остаётся 25.4, а не 25.40. Так выглядит round(x, 2) в
     Python - скорее всего, так посчитан и эталон. Если знаков не больше, чем просили, в условии разное
-    число знаков или ответ не одно число, ответ остаётся как есть."""
+    число знаков или ответ не одно число, ответ остаётся как есть (кроме нулей в конце)."""
     asks = [x for x in re.split(r"(?<=[.?!])\s+", instruction or "") if REQUEST_RE.search(x)]
     counts = {int(n) if n.isdigit() else _WORD_NUM[n.lower()] for x in asks for n in DECIMALS_RE.findall(x)}
     if len(counts) != 1 or not NUMBER_RE.fullmatch(answer):
         return answer
     places = counts.pop()
     if len(answer.partition(".")[2]) <= places:
-        return answer
+        # знаков не больше, чем просили: только убираем нули в конце (модель пишет «25.40»)
+        if "." in answer:
+            answer = answer.rstrip("0").rstrip(".")
+        return "0" if answer in ("-0", "") else answer
     try:
         out = str(Decimal(answer).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP))
     except InvalidOperation:

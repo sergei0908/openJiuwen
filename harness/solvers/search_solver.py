@@ -238,13 +238,19 @@ def unknown_names(text, ents):
     return out
 
 
+BACK_RE = re.compile(r"\b(?:who|whom|which (?:people|person|employees?)|how many (?:people|persons|employees)|"
+                     r"mentors|mentored|advises|supervises|manages|employs|that person|this person)\b",
+                     re.IGNORECASE)
+
+
 def gather_context(question, ents, files, hops=2):
     start = mentioned(question, ents)
     # обратные связи: «Who works at Polar Bit?» - нужны люди, у которых Employer: Polar Bit
-    # (только для вопросов «кто…» / «сколько людей…», иначе контекст разрастается зря)
+    # (только для вопросов «кто…» / «сколько людей…» и для связи, где названный - сторона «от себя»:
+    # «Hiro Petrov mentors one person… Which company employs that person?» - нужен тот, у кого
+    # Mentor: Hiro Petrov). Иначе контекст разрастается зря.
     back = []
-    if re.search(r"\b(?:who|whom|which (?:people|person|employees?)|how many (?:people|persons|employees))\b",
-                 question, re.IGNORECASE):
+    if BACK_RE.search(question):
         back = [k for k, e in ents.items() if k not in start
                 and any(v.lower() in start for v in e["fields"].values())]
     seen, frontier = [], start + back
