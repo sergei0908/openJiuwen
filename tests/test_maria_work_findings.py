@@ -39,5 +39,13 @@ def test_agent_gave_up_is_not_an_answer():
 def test_scale_is_applied():
     m = json.loads(Path(MODEL_PATH).read_text(encoding="utf-8"))["types"]["math"]
     feats = {k: 1 for k in m["coef"]}
-    base = linear_predict(dict(m, scale=1.0), feats)
-    assert abs(linear_predict(m, feats) - base * m["scale"]) < 1e-6 or base * m["scale"] > m["clip"][1]
+    base = linear_predict(dict(m, scale=1.0, floor=0.0), feats)
+    scaled = linear_predict(dict(m, floor=0.0), feats)
+    assert abs(scaled - base * m["scale"]) < 1e-6 or base * m["scale"] > m["clip"][1]
+
+
+def test_floor_is_one_call():
+    # закрытый набор Маши: data-задачи с маленькой таблицей получали прогноз 65 при цене одного вызова 115+
+    m = json.loads(Path(MODEL_PATH).read_text(encoding="utf-8"))["types"]["data_analysis"]
+    feats = {k: 0 for k in m["coef"]}
+    assert linear_predict(m, feats) >= m["floor"]
