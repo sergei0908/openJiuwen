@@ -26,8 +26,14 @@ class Plan:
 
 
 def extract_question(instr: str) -> str:
-    qs = re.findall(r"[^.?!]*\?", instr)
-    return qs[-1].strip() if qs else instr
+    """Последнее предложение-вопрос. Предложения делим по «. », а не по любой точке: иначе
+    «… orders in sales.csv?» превращается в «csv?»."""
+    sents = re.split(r"(?<=[.!?])\s+", instr)
+    qs = [s.strip() for s in sents if "?" in s]
+    if not qs:
+        return instr
+    q = qs[-1]
+    return q[:q.rindex("?") + 1]
 
 
 def strip_boilerplate(instr: str) -> str:
@@ -50,6 +56,18 @@ def clean_answer(ans: str) -> str:
     a = a.strip().strip('"').strip("'").strip()
     if re.fullmatch(r"-?\d+\.0+", a):
         a = a.split(".")[0]
+    m = re.fullmatch(r"(-?\d+)\s*/\s*(\d+)", a)
+    if m and int(m.group(2)):
+        # дробь «36/5» -> «7.2», если она записывается конечной десятичной
+        from fractions import Fraction
+        f = Fraction(int(m.group(1)), int(m.group(2)))
+        d = f.denominator
+        while d % 2 == 0:
+            d //= 2
+        while d % 5 == 0:
+            d //= 5
+        if d == 1:
+            a = format(f.numerator / f.denominator, ".10f").rstrip("0").rstrip(".")
     return a
 
 
@@ -62,8 +80,9 @@ FINAL_RULES = ("When you know the answer, reply with exactly one line 'FINAL: <a
                "reply 'FINAL: IMPOSSIBLE'.")
 # Для решателей с инструментом python: ответ печатает сам скрипт, и агент останавливается сразу.
 PRINT_FINAL = ("Call the python tool right away, with no text around the call. Keep the script minimal, "
-               "no comments. It must end with print('FINAL:', answer) - that line is taken as your answer, "
-               "so print it only when the computation is complete. ")
+               "no comments. It must end with print('FINAL:', answer) - that line is taken as your answer "
+               "(a plain number - a decimal, not a fraction - or a short value), so print it only when the "
+               "computation is complete. ")
 
 
 def agent_answer(llm, *, system_prompt, query, tools, strong=False, max_tokens=600, max_iterations=3,
