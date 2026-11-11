@@ -31,3 +31,18 @@ def test_only_changed_functions_are_checked():
 
 def test_unparsable_source_is_not_suspicious():
     assert suspicious_patch("def f(:\n", "def f(:\n") is None
+
+
+def test_division_introduced_by_repair_is_suspicious():
+    # `*` -> `//` проходит видимые тесты, которые делятся нацело; верно `/` (adv_report 22-23)
+    from harness.solvers.coding_solver import suspicious_patch
+    orig = "def average(xs):\n    return sum(xs) * len(xs)\n"
+    assert suspicious_patch(orig, orig.replace("*", "//"))
+    assert suspicious_patch(orig, orig.replace("*", "/"))
+
+
+def test_swapping_division_kind_is_not_suspicious():
+    # `/` -> `//` (или наоборот): число делений то же, тесты отличают одно от другого - это обычная починка
+    from harness.solvers.coding_solver import suspicious_patch
+    orig = "def half(x):\n    return x / 2\n"
+    assert suspicious_patch(orig, orig.replace("/", "//")) is None

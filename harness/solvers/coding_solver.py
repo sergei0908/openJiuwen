@@ -162,7 +162,21 @@ def suspicious_patch(orig, fixed):
         new_idx = set(_const_indices(fn)) - set(_const_indices(old))
         if new_idx:  # появился новый константный индекс - его подобрали под тест
             return f"{name}: constant index {_const_indices(old)} -> {_const_indices(fn)}"
+        if _ops(fn, None) == _ops(old, None) and _ops(fn, DIVS) > _ops(old, DIVS):
+            # операцию заменили на деление (`*` -> `//`): видимые тесты часто делятся нацело и не отличают
+            # `/` от `//`, а перебор пробует `//` первым. Какое деление нужно, решает агент. Новое выражение
+            # с делением (`ys[1]` -> `ys[len(ys) // 2]`) - не замена операции, это обычная починка.
+            return f"{name}: operator replaced by division"
     return None
+
+
+DIVS = (ast.Div, ast.FloorDiv)
+
+
+def _ops(fn, kinds):
+    """Сколько арифметических операций в функции (kinds=None - всех, иначе только этих видов)."""
+    return sum(isinstance(n, (ast.BinOp, ast.AugAssign)) and (kinds is None or isinstance(n.op, kinds))
+               for n in ast.walk(fn))
 
 
 def analyze(task, fast_path=True):
@@ -224,9 +238,11 @@ MULTI = "\n\nSeveral source files: pass `file` to update_code."
 # Перебор нашёл «починку», похожую на подгонку под видимые тесты (константа нейтрализована, индекс
 # подобран). Значит, в функции, скорее всего, ещё один баг, которого видимые тесты не ловят - говорим об
 # этом модели, иначе она делает ту же минимальную правку (`x // n + 1` -> `x // n`, а нужно `x / n`).
-SUSPECT_HINT = ("\n\nWarning: the visible tests pass already if a constant in {funcs} is just removed or "
-                "adjusted, so {it} most likely {has} another bug they do not catch. Hidden tests check other "
-                "inputs: fix {funcs} so that {it} {is_} correct for all valid inputs, as the name says.")
+SUSPECT_HINT = ("\n\nWarning: the visible tests pass already after a small change in {funcs} (a constant "
+                "removed, an index or an operator picked to fit them), so {it} most likely {has} another bug "
+                "they do not catch, or the shown cases cannot tell the right fix from a wrong one (true vs floor "
+                "division). Hidden tests check other inputs: fix {funcs} so that {it} {is_} correct for all "
+                "valid inputs, as the name says.")
 
 
 def suspect_hint(plan):
