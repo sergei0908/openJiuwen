@@ -108,6 +108,11 @@ def named_values(q):
 def compute(rows, metric, filt):
     if metric.startswith("top_"):
         return compute_top(rows, metric, filt)
+    if metric == "orders":
+        ids = [(r.get("order_id") or "").strip() for r in rows]
+        if any(ids) and len(set(ids)) != len(ids):
+            # один заказ в нескольких строках: «сколько заказов» - это не число строк, решает агент
+            return None
     total = 0
     for r in rows:
         try:
