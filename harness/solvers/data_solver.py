@@ -170,29 +170,6 @@ def read_rows(path):
         return None
 
 
-AGG_WORD = re.compile(r"\b(?:average|mean|median|total|sum of|maximum|minimum|highest|lowest|largest|smallest)\s+"
-                      r"(?:(?:of|all|the|each)\s+)*(['\"]?)([a-z_]+)", re.IGNORECASE)
-DERIVED = {"revenue", "sales", "amount", "number", "count", "quantity", "item", "value", "income", "earning",
-           "spend", "spending", "money", "turnover", "order", "record", "row", "entry", "entrie", "cost", "price"}
-
-
-def missing_measure(question, rows):
-    """Величина, которой нет в таблице: «average discount», когда столбца discount нет. Только для
-    явного слова после average/total/…; кавычки (значение, а не столбец) и производные величины
-    (выручка, количество) не считаются - «уверен или молчит»."""
-    if not rows or len(rows[0]) < 2:
-        return None
-    cols = [c.strip().lower() for c in rows[0] if c]
-    for m in AGG_WORD.finditer(question):
-        if m.group(1):
-            continue
-        w = m.group(2).lower().rstrip("s")
-        if w in DERIVED or any(w in c or c.rstrip("s") in w for c in cols):
-            continue
-        return w
-    return None
-
-
 def analyze(task, fast_path=True):
     p = Plan()
     files = csv_files(task.workspace)
@@ -209,9 +186,6 @@ def analyze(task, fast_path=True):
         parsed = parse_question(q)
         if rows is not None and not data_exists(rows, parsed[1] if parsed else named_values(q)):
             p.feasible = False
-            return p
-        if rows is not None and missing_measure(q, rows):
-            p.feasible = False  # спрашивают о величине, которой в таблице нет
             return p
         if fast_path and rows is not None and parsed and files[0].name == "sales.csv":
             a = compute(rows, *parsed)
