@@ -190,6 +190,21 @@ SYSTEM = ("You fix bugs in Python code so that the tests pass. Never change the 
           "the tests contradict each other and cannot all pass, reply 'FINAL: IMPOSSIBLE'.")
 QUERY = "{task}\n\n{files}\n\nCurrent test output:\n```\n{out}\n```"
 MULTI = "\n\nSeveral source files: pass `file` to update_code."
+# Перебор нашёл «починку», похожую на подгонку под видимые тесты (константа нейтрализована, индекс
+# подобран). Значит, в функции, скорее всего, ещё один баг, которого видимые тесты не ловят - говорим об
+# этом модели, иначе она делает ту же минимальную правку (`x // n + 1` -> `x // n`, а нужно `x / n`).
+SUSPECT_HINT = ("\n\nWarning: the visible tests pass already if a constant in {funcs} is just removed or "
+                "adjusted, so {it} most likely {has} another bug they do not catch. Hidden tests check other "
+                "inputs: fix {funcs} so that {it} {is_} correct for all valid inputs, as the name says.")
+
+
+def suspect_hint(plan):
+    funcs = sorted({why.split(":")[0] for why in plan.notes.get("apr_suspect", {}).values()})
+    if not funcs:
+        return ""
+    one = len(funcs) == 1
+    return SUSPECT_HINT.format(funcs=", ".join(f"`{f}`" for f in funcs), it="it" if one else "they",
+                               has="has" if one else "have", is_="is" if one else "are")
 
 
 def compact_test_output(out, limit=900):
@@ -330,7 +345,8 @@ def solve_llm(task, llm, plan, strong=False):
                 files = "\n\n".join(f"File {rel(t, ws)}:\n```python\n{t.read_text(encoding='utf-8')}```"
                                     for t in targets + tests)
             tools, state = make_coding_tools(task.workspace, {rel(t, ws) for t in targets}, cmd)
-            llm.agent(system_prompt=SYSTEM, query=QUERY.format(task=task_text, files=files, out=compact_test_output(out)) + multi,
+            query = QUERY.format(task=task_text, files=files, out=compact_test_output(out)) + multi + suspect_hint(plan)
+            llm.agent(system_prompt=SYSTEM, query=query,
                       tools=tools, model=model, max_iterations=3, max_tokens=max_out,
                       stop=lambda state=state: state["passed"])
             ok, out = run_tests(task, tests)  # проверяем сами, не веря агенту на слово
