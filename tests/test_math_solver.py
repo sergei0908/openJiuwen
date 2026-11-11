@@ -98,3 +98,25 @@ def test_sentences_about_the_stock_are_not_filler():
 def test_filler_needs_same_unit_in_question():
     q = "A warehouse starts with 500 boxes. The warehouse has 12 crates. How many crates does it have at the end?"
     assert fast_solve(q) is None
+
+
+def test_actions_without_known_verb_go_to_agent():
+    # действие над запасом, но глагола нет в правилах - не «лишнее предложение» (adv_report 15-16)
+    for s in ("Its inventory is then reduced by 40 during an audit.", "The count was halved after a flood.",
+              "The stock is reduced by 40.", "The total is cut in half."):
+        assert fast_solve("A warehouse starts with 480 boxes. It ships 36 boxes. " + s + Q_END) is None, s
+
+
+def test_numbers_about_other_things_are_not_stock():
+    # «It loses 2 employees» - не 2 коробки (adv_report 17-18)
+    for s in ("It loses 2 employees.", "It receives 3 complaints.", "It ships 4 trucks.",
+              "Then a customer buys 2 tickets.", "It receives 3 deliveries of 20 pallets each."):
+        assert fast_solve("A warehouse starts with 480 boxes. " + s + Q_END) is None, s
+
+
+def test_same_unit_in_singular_and_plural():
+    assert fast_solve("A warehouse starts with 10 boxes. It receives 1 box." + Q_END) == "11"
+    q = "A shop starts with 30 crates. It ships 5 crates. How many crates does it have at the end?"
+    assert fast_solve(q) == "25"
+    assert fast_solve("A warehouse starts with 200 boxes. 50% of its boxes are sold." + Q_END) == "100"
+    assert fast_solve("A warehouse starts with 200 boxes. 50% of its pallets are sold." + Q_END) is None
