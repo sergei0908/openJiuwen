@@ -105,5 +105,5 @@ def test_stack_fixed_passes_with_our_command(tmp_path):
     task, ws = task_with(tmp_path, STACK.replace("pop(0)", "pop()"), STACK_TEST)
     ok, out = run_tests(task, [ws / "test_mylib.py"])
     assert ok, out
-    r = subprocess.run([sys.executable, "test_mylib.py"], cwd=ws, capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "test_mylib.py"], check=False, cwd=ws, capture_output=True, text=True)
     assert r.returncode == 0
